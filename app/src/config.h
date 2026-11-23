@@ -2,13 +2,16 @@
 #pragma once
 #include <stdbool.h>
 
+/* How much the stats HUD shows while streaming. */
+enum { STATS_OFF, STATS_COMPACT, STATS_DETAILED, STATS_MODES };
+
 typedef struct {
     char host[64];      /* host PC's IP address */
     char app[64];       /* app to launch, as named in Sunshine ("Desktop") */
     int width, height;  /* stream resolution */
     int fps;
     int bitrate_kbps;
-    bool show_stats;    /* overlay with frame rates and decode times */
+    int stats_mode;     /* STATS_OFF, STATS_COMPACT or STATS_DETAILED */
     bool fast_decode;   /* skip H.264's deblocking filter: faster, slightly blockier */
     bool gpu_decode;    /* experimental: the GPU predicts each frame (gpudec.c); implies no deblocking */
     bool low_latency;   /* draw each frame as soon as it is decoded, not on the next refresh after (main.c) */

@@ -192,7 +192,7 @@ static int step_choice(int i, int count, int step)
 
 static bool is_toggle(int item)
 {
-    return item == ITEM_FAST_DECODE || item == ITEM_GPU_DECODE || item == ITEM_LOW_LATENCY || item == ITEM_STATS || item == ITEM_DECODE ||
+    return item == ITEM_FAST_DECODE || item == ITEM_GPU_DECODE || item == ITEM_LOW_LATENCY || item == ITEM_DECODE ||
            item == ITEM_DRAW;
 }
 
@@ -218,7 +218,7 @@ static void change(int item, int step)
             config->bitrate_kbps = MAX_BITRATE_KBPS;
         break;
     case ITEM_STATS:
-        config->show_stats = !config->show_stats;
+        config->stats_mode = step_choice(config->stats_mode, STATS_MODES, step);
         break;
     case ITEM_FAST_DECODE:
         config->fast_decode = !config->fast_decode;
@@ -538,7 +538,8 @@ static void item_help(int item, const char **help, const char **warning)
                 "refresh sooner. No tearing. Turn it off if the picture stutters.";
         break;
     case ITEM_STATS:
-        *help = "Shows frame rate, latency, ping, lost frames and console load at the top of the screen.";
+        *help = "What shows over the game. Compact: frame rate, latency, ping and loss in one line. Detailed: where the "
+                "latency goes, the network and the console's load. Also changes in the stream menu (Back + Start).";
         break;
     case ITEM_AUDIO_ON_HOST:
         *help = "Where the game's sound plays. Apollo/Sunshine still send the audio stream either way, so this "
@@ -653,9 +654,11 @@ static void draw_value(int item, int32_t right, int32_t y, int32_t cy, bool sele
     case ITEM_LOW_LATENCY:
         draw_switch(right, cy, config->low_latency);
         break;
-    case ITEM_STATS:
-        draw_switch(right, cy, config->show_stats);
+    case ITEM_STATS: {
+        static const char *const names[STATS_MODES] = { "Off", "Compact", "Detailed" };
+        draw_choice(right, y, names[config->stats_mode], selected, text);
         break;
+    }
     case ITEM_DECODE:
         draw_switch(right, cy, config->decode);
         break;
@@ -687,7 +690,7 @@ static const char *item_label(int item)
     case ITEM_FAST_DECODE: return "Fast decode";
     case ITEM_GPU_DECODE: return "GPU decoding (beta)";
     case ITEM_LOW_LATENCY: return "Low-latency display";
-    case ITEM_STATS: return "Stats overlay";
+    case ITEM_STATS: return "Stats";
     case ITEM_AUDIO_ON_HOST: return "Sound plays on";
     case ITEM_AUDIO_PACKETS: return "Audio packets";
     case ITEM_PACKET_SIZE: return "Video packet size";

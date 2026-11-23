@@ -347,24 +347,48 @@ int main(int argc, char **argv)
     gfx_frame_begin(W, H);
     PerfReadings perf;
     perf_get(&perf);
-    static NetStats net = { .rtt_ms = 1, .rtt_var_ms = 0, .lost_frames = 2, .loss_pct = 1.7f, .budget_ms = 1000.0f / 30,
-                            .count = NET_HISTORY };
+    /* Figures from a real 720p30 session (log 2026-11-23 04:40), and a troubled one. */
+    static NetStats net = { .rtt_ms = 1, .rtt_var_ms = 0, .budget_ms = 1000.0f / 30, .count = NET_HISTORY };
     for (int i = 0; i < NET_HISTORY; i++)
-        net.interval_ms[i] = 1000.0f / 30 + (float)((i * 37) % 11) - 5.0f;
-    net.interval_ms[52] = 81.0f;
-    net.lost_before[71] = true;
-    ui_draw_stats("30 fps  dropped 0  errors 0  audio gaps 0  CAVLC  fast",
-                  "Latency 31 ms = PC 4 + net 3 + decode 13 + display 11", &perf, &net);
-    overlay_draw(W, H, "Desktop");
+        net.interval_ms[i] = 1000.0f / 30 + (float)((i * 37) % 7) - 3.0f;
+    const HudStats hud = { .ready = true, .fps = 30, .target_fps = 30, .width = 1280, .height = 720, .cabac = 0,
+                           .fast_decode = true, .host_ms = 2, .net_ms = 5, .decode_ms = 18, .display_ms = 14 };
+    ui_draw_stats(STATS_COMPACT, &hud, &perf, &net);
+    overlay_draw(W, H, "Desktop", STATS_COMPACT);
     snprintf(path, sizeof path, "%s/9-stream-menu.png", dir);
     write_png(path);
 
     clear();
     fake_game();
     gfx_frame_begin(W, H);
-    ui_draw_stats("30 fps  dropped 0  errors 0  audio gaps 0  CAVLC  fast",
-                  "Latency 31 ms = PC 4 + net 3 + decode 13 + display 11", &perf, &net);
+    ui_draw_stats(STATS_DETAILED, &hud, &perf, &net);
     snprintf(path, sizeof path, "%s/10-stats.png", dir);
+    write_png(path);
+
+    clear();
+    fake_game();
+    gfx_frame_begin(W, H);
+    ui_draw_stats(STATS_COMPACT, &hud, &perf, &net);
+    snprintf(path, sizeof path, "%s/11-stats-compact.png", dir);
+    write_png(path);
+
+    static NetStats bad;
+    bad = net;
+    bad.rtt_ms = 18;
+    bad.loss_pct = 1.7f;
+    bad.lost_frames = 28;
+    bad.interval_ms[52] = 81.0f;
+    bad.interval_ms[60] = 70.0f;
+    bad.lost_before[71] = true;
+    bad.lost_before[72] = true;
+    const HudStats troubled = { .ready = true, .fps = 26, .target_fps = 30, .width = 1600, .height = 900, .cabac = 0,
+                                .host_ms = 5, .net_ms = 14, .decode_ms = 29, .display_ms = 25, .dropped = 3,
+                                .audio_gaps = 4 };
+    clear();
+    fake_game();
+    gfx_frame_begin(W, H);
+    ui_draw_stats(STATS_DETAILED, &troubled, &perf, &bad);
+    snprintf(path, sizeof path, "%s/12-stats-trouble.png", dir);
     write_png(path);
 
     static Config empty = { .app = "Desktop", .width = 1280, .height = 720, .fps = 30, .bitrate_kbps = 8000,

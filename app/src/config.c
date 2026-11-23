@@ -23,7 +23,7 @@ bool config_load(const char *path, Config *c)
     c->height = 720;
     c->fps = 30;
     c->bitrate_kbps = 8000;
-    c->show_stats = true;
+    c->stats_mode = STATS_COMPACT;
     c->decode = true;
     c->draw = true;
     c->audio_output = true;
@@ -67,7 +67,10 @@ bool config_load(const char *path, Config *c)
         else if (!strcmp(key, "bitrate"))
             c->bitrate_kbps = atoi(value);
         else if (!strcmp(key, "stats"))
-            c->show_stats = atoi(value) != 0;
+        {
+            const int mode = atoi(value);
+            c->stats_mode = mode < STATS_OFF ? STATS_OFF : mode >= STATS_MODES ? STATS_DETAILED : mode;
+        }
         else if (!strcmp(key, "fast_decode"))
             c->fast_decode = atoi(value) != 0;
         else if (!strcmp(key, "decode"))
@@ -114,7 +117,7 @@ bool config_save(const char *path, const Config *c)
             "fps=%d\n"
             "# kbps\n"
             "bitrate=%d\n"
-            "# 1 shows decode/display rates at the top of the screen\n"
+            "# stats: the HUD while streaming, 0 off, 1 compact, 2 detailed\n"
             "stats=%d\n"
             "# 1 skips H.264's deblocking filter: faster decoding, slightly blockier picture\n"
             "fast_decode=%d\n"
@@ -132,7 +135,7 @@ bool config_save(const char *path, const Config *c)
             "decode=%d\n"
             "draw=%d\n"
             "packet_size=%d\n",
-            c->host, c->app, c->width, c->height, c->fps, c->bitrate_kbps, c->show_stats ? 1 : 0,
+            c->host, c->app, c->width, c->height, c->fps, c->bitrate_kbps, c->stats_mode,
             c->fast_decode ? 1 : 0, c->audio_packet_ms, c->audio_on_host ? 1 : 0, c->gpu_decode ? 1 : 0, c->low_latency ? 1 : 0, c->decode ? 1 : 0, c->draw ? 1 : 0, c->packet_size);
     fclose(f);
     return true;

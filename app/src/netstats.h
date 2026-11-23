@@ -1,5 +1,5 @@
-/* The network half of the stats panel: ping, lost frames, and how the last frames arrived. Filled by video.c (frames)
- * and main.c (ping), drawn by ui.c. */
+/* What the stats HUD shows. NetStats: ping, lost frames and how the last frames arrived, filled by video.c (frames)
+ * and main.c (ping). HudStats: the stream and its latency, filled by main.c once a second. Drawn by ui.c. */
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
@@ -15,3 +15,17 @@ typedef struct {
     float interval_ms[NET_HISTORY];   /* time since the frame before arrived */
     bool lost_before[NET_HISTORY];    /* frames were lost just before this one */
 } NetStats;
+
+typedef struct {
+    bool ready;                 /* a second of the stream measured */
+    float fps, target_fps;      /* frames shown a second, and the stream's rate */
+    int width, height;
+    int cabac;                  /* 1 CABAC, 0 CAVLC, -1 not known yet */
+    bool fast_decode, gpu_decode;
+    float gpu_ms, replay_ms;    /* GPU decoding's two parts, a frame */
+    /* Latency in ms, last second's average: the PC's capture and encode (-1: the host doesn't say), network, decode,
+     * display (-1: not measured yet). */
+    float host_ms, net_ms, decode_ms, display_ms;
+    /* Trouble in the last 5 seconds. */
+    uint32_t dropped, errors, audio_gaps;
+} HudStats;
