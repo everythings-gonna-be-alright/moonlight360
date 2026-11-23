@@ -45,8 +45,9 @@ pixels; photographing a TV with a phone was the alternative.</sub>
 
 ## Quick start
 
-1. **Build it** (see [Building](#building)), or grab a release if there is one.
-2. **Copy `moonlight360.xex`** to its own folder on the console, over FTP or a USB stick.
+1. **Download `moonlight360.xex`** from [Releases](https://github.com/everythings-gonna-be-alright/moonlight360/releases),
+   or build it yourself (see [Building](#building)).
+2. **Copy it** to its own folder on the console, over FTP or a USB stick.
 3. **Launch it from Aurora.** On the **Play** tab, set *Host PC* to your PC's IP address.
 4. **Pick *Start streaming*.** The first time, the app shows a 4-digit PIN: enter it on Sunshine's web UI, on the
    PIN page. You only do this once.
@@ -59,7 +60,7 @@ things go sideways.
 ### Recommended host settings
 
 - **Encoder:** software (x264), or any encoder that can do **CAVLC**. In Sunshine, set *Advanced → H.264 entropy
-  coding → CAVLC*. CAVLC decodes about 30% faster on the 360, and at 1080p that's the whole difference.
+  coding → CAVLC*. CAVLC takes about 40% less time to decode on the 360, and at 1080p that's the whole difference.
 - **Over Wi-Fi:** 720p at 6–10 Mbit/s.
 - **Over Ethernet:** up to 25–30 Mbit/s.
 - **Desktop at 30 fps when you asked for 60?** That's normal. Desktop capture sends a frame only when something on
@@ -72,10 +73,12 @@ Measured on the console. The clips are 1080p30 at about 22 Mbit/s, shaped like a
 
 | Decoder setup | CABAC | CAVLC |
 |---|---:|---:|
-| FFmpeg in C, 4 threads on 2 cores (where we started) | 91 | – |
-| FFmpeg in C, 6 threads on all 3 cores | 64 | 45 |
-| + AltiVec | 53 | 34 |
-| + AltiVec, no deblocking (*Fast decode*) | 43 | **24** |
+| FFmpeg in C, 4 threads on 2 cores (where we started) | 89 | – |
+| FFmpeg in C, 6 threads on all 3 cores | 65 | 44 |
+| + AltiVec | 54 | 33 |
+| + AltiVec, no deblocking (*Fast decode*) | 43 | **23** |
+
+Every frame of every run is checked against FFmpeg on a PC, so speed never comes at the cost of a wrong pixel.
 
 What got it from "slideshow" to "playable":
 
