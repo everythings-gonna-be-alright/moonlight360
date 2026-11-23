@@ -1,6 +1,6 @@
 #version 450
 // H.264 luma inter prediction plus the residual, four pixels a texel, from the planes src/gpumc.c draws first (mc_pg/pb/ph/pj.frag):
-// each quarter position is one plane's value or the rounded average of two (bench/source/mc_ref.c, mc_ref_luma). The
+// each quarter position is one plane's value or the rounded average of two (dev/bench/source/mc_ref.c, mc_ref_luma). The
 // block's vector puts x0 anywhere, so each plane is read two texels at a time and the five samples from x0 picked
 // out with weights; no branches (xost gives every branch registers of its own).
 layout(location = 0) in vec2 v_pixel;

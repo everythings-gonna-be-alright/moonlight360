@@ -2,7 +2,7 @@
 # Cross-compiles a minimal FFmpeg (H.264 decoder + parser, pthreads) for xsdk, with AltiVec: the H.264 IDCTs, luma
 # loop filter and qpel motion compensation in VMX. patches/ffmpeg-xenon-vmx128.patch takes out the vector integer
 # multiplies Xenon lacks; the build fails if any are left (tools: objdump scan below).
-# Run: docker run --rm -v "$PWD":/work moonlight-xsdk-toolchain /work/scripts/build-ffmpeg-xsdk-vmx.sh
+# Run: docker run --rm -v "$PWD":/work moonlight-xsdk-toolchain /work/scripts/build-ffmpeg.sh
 set -euo pipefail
 cd /work/third_party/ffmpeg
 if git apply --reverse --check /work/patches/ffmpeg-xenon-vmx128.patch 2>/dev/null; then :; else

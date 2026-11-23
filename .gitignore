@@ -1,6 +1,6 @@
-# build output, test clips (tools/make_clips.sh makes them), console logs
+# build output, test clips (dev/make_clips.sh makes them), console logs
 /build/
-/bench/data/*.h264
+/dev/bench/data/*.h264
 *.log
 .DS_Store
 

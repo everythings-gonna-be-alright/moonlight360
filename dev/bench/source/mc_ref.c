@@ -1,5 +1,5 @@
 /* H.264 inter prediction for the hybrid decoder (P, one reference, no weights) from h264_xenon.c's motion vector grid:
- * the C model app/shaders/mc_*.frag follow line for line, checked against FFmpeg by tools/hybrid_test. */
+ * the C model app/shaders/mc_*.frag follow line for line, checked against FFmpeg by dev/hybrid_test. */
 #include "mc_ref.h"
 
 static int clampi(int v, int lo, int hi)

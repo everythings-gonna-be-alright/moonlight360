@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.25)
 project(moonlight360 C)
 
 set(TP "${CMAKE_CURRENT_SOURCE_DIR}/../third_party")
-# FFmpeg with its AltiVec H.264 code, patched for Xenon (scripts/build-ffmpeg-xsdk-vmx.sh): bit-exact with the C
+# FFmpeg with its AltiVec H.264 code, patched for Xenon (scripts/build-ffmpeg.sh): bit-exact with the C
 # build and 17-24% faster at 1080p (decbench, 2026-11-23).
 set(FFMPEG_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/../build/prefix-xsdk-vmx")
 
@@ -72,10 +72,10 @@ target_compile_definitions(gamestream PRIVATE PATH_MAX=260)
 
 # --- The title ---------------------------------------------------------------------------------------------------
 add_executable(moonlight360
-  src/main.c src/config.c src/menu.c src/apps.c src/overlay.c src/ui.c src/gfx.c src/perf.c src/gpumc.c src/gpudec.c src/session.c src/video.c src/render.c src/audio.c src/input.c src/placement.c src/posix_stubs.c src/diag.c src/netfix.c src/logbuf.c ../common/devreturn.c)
+  src/main.c src/config.c src/menu.c src/apps.c src/overlay.c src/ui.c src/gfx.c src/perf.c src/gpumc.c src/gpudec.c src/session.c src/video.c src/render.c src/audio.c src/input.c src/placement.c src/posix_stubs.c src/diag.c src/netfix.c src/logbuf.c src/devreturn.c)
 set_target_properties(moonlight360 PROPERTIES C_STANDARD 17 C_EXTENSIONS ON)
 target_compile_options(moonlight360 PRIVATE -O2 -Wall -Wextra -Wno-unused-parameter)
-target_include_directories(moonlight360 PRIVATE src ../common "${FFMPEG_PREFIX}/include"
+target_include_directories(moonlight360 PRIVATE src "${FFMPEG_PREFIX}/include"
   "${TP}/moonlight-tv/core/moonlight-common-c/src")
 # Every pthread goes through placement.c, which puts it on a hardware thread.
 target_link_options(moonlight360 PRIVATE -Wl,--wrap=pthread_create -Wl,--wrap=setsockopt -Wl,--wrap=recvfrom -Wl,--wrap=connect

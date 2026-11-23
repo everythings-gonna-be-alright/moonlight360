@@ -1,7 +1,7 @@
 /*
  * hybench: the hybrid H.264 decoder on the console. Each clip is decoded twice, plainly (FFmpeg, 6 slice threads, no
  * deblocking) and hybrid (FFmpeg parses, the GPU predicts, FFmpeg replays the rest on 6 threads); every hybrid frame
- * must match the plain one, the first few predictions are checked pixel by pixel against bench/source/mc_ref.c, and
+ * must match the plain one, the first few predictions are checked pixel by pixel against dev/bench/source/mc_ref.c, and
  * each stage is timed. Logs to hybench.log and returns to devlaunch when started from it.
  */
 #include <pthread.h>

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Builds build/app/moonlight360.xex.
 # Needs libxsdk.a, xsdk's host shader compiler and FFmpeg first:
-#   scripts/build-xsdk.sh, scripts/build-ffmpeg-xsdk-vmx.sh
+#   scripts/build-xsdk.sh, scripts/build-ffmpeg.sh
 # Run: docker run --rm -v "$PWD":/work moonlight-xsdk-toolchain /work/scripts/build-app.sh
 set -euo pipefail
 
@@ -26,8 +26,8 @@ cmake -S /work/app -B /work/build/app -G Ninja \
 touch /work/app/src/main.c /work/app/src/menu.c
 cmake --build /work/build/app --target moonlight360
 ls -la /work/build/app/moonlight360.xex
-# xost can drop a shader body silently, which hangs the GPU (tools/check_shaders.py).
-python3 /work/tools/check_shaders.py /work/build/app/moonlight360_shaders.h
+# xost can drop a shader body silently, which hangs the GPU (scripts/check_shaders.py).
+python3 /work/scripts/check_shaders.py /work/build/app/moonlight360_shaders.h
 mkdir -p /work/build/app/dist
 cp /work/build/app/moonlight360.xex /work/build/app/dist/
 [ -f /work/build/app/dist/moonlight.ini ] || cp /work/app/moonlight.ini /work/build/app/dist/

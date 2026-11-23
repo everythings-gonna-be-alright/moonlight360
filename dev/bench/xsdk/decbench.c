@@ -25,7 +25,7 @@ extern const uint8_t cabac22_start[], cabac22_end[], cavlc22_start[], cavlc22_en
     cavlc12_start[], cavlc12_end[], cavlc5_start[], cavlc5_end[];
 
 /* The clips: one scene, 60 frames of 1080p30 with 6 slices, at three bitrates; each one's checksum decoded by FFmpeg
- * on the Mac (bench/data, from tools/make_clips.sh; deblocking on, then skipped). 1080p60 at 25 Mbit/s carries as many bits a frame as 1080p30
+ * on the Mac (dev/bench/data, from dev/make_clips.sh; deblocking on, then skipped). 1080p60 at 25 Mbit/s carries as many bits a frame as 1080p30
  * at 12.5, so the middle clips are a 1080p60 stream's frames. */
 typedef struct {
     const char *name;

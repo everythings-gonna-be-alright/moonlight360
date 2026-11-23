@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Dev server for devlaunch.xex: serves the current build of a program to the console and takes its logs back.
 
-    python3 tools/devserver.py [--port 7380] [--target moonlight360]
+    python3 dev/devserver.py [--port 7380] [--target moonlight360]
 
 The target can be changed while it runs by writing its name to build/devserver/target.txt.
 
@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 STATE = ROOT / "build" / "devserver"
 LOGS = STATE / "logs"
 TARGET_FILE = STATE / "target.txt"
-# A number the launcher compares with the last one it ran: bumping it (tools/devserver.py --bump, or writing the
+# A number the launcher compares with the last one it ran: bumping it (dev/devserver.py --bump, or writing the
 # file) makes a waiting launcher download and run the target by itself.
 RUN_FILE = STATE / "run.txt"
 # Test arguments passed to the launched program (e.g. "autotest seconds=120 draw=1"); empty for a normal start.
@@ -40,7 +40,7 @@ TARGETS = {
         "files": {"decbench.xex": ROOT / "build/bench-xsdk/decbench.xex",
                   "decbench_vmx.xex": ROOT / "build/bench-xsdk/decbench_vmx.xex"},
     },
-    # The hybrid decoder (FFmpeg parses, the GPU predicts) against plain decoding (bench/xsdk/hybench.c).
+    # The hybrid decoder (FFmpeg parses, the GPU predicts) against plain decoding (dev/bench/xsdk/hybench.c).
     "hybench": {
         "launch": "hybench.xex",
         "files": {"hybench.xex": ROOT / "build/bench-xsdk/hybench.xex"},

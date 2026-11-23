@@ -1,5 +1,5 @@
 /* Host stand-ins for the xsdk calls the menu code makes: enough to draw it into a picture on a PC
- * (tools/menu_preview). Not the SDK. */
+ * (dev/menu_preview). Not the SDK. */
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>

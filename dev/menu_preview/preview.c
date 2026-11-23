@@ -3,7 +3,7 @@
  * The GPU calls are stood in for by a software rasteriser that does what shape.frag and xsdk's text do: rounded
  * rectangles by signed distance, blended by alpha, and the 10x20 bitmap font point-sampled.
  *
- *     tools/menu_preview/build.sh      (writes the PNGs to build/preview)
+ *     dev/menu_preview/build.sh      (writes the PNGs to build/preview)
  */
 #include <math.h>
 #include <stdio.h>

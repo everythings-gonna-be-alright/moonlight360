@@ -15,7 +15,7 @@ otherwise.
 | ![Main menu](docs/screenshots/play.png) | ![Video settings](docs/screenshots/video.png) |
 | ![Pairing](docs/screenshots/pairing.png) | ![Stream menu](docs/screenshots/stream-menu.png) |
 
-<sub>These are renders of the real menu code made on a PC by `tools/menu_preview`. The console draws the same
+<sub>These are renders of the real menu code made on a PC by `dev/menu_preview`. The console draws the same
 pixels; photographing a TV with a phone was the alternative.</sub>
 
 ## What works
@@ -104,7 +104,7 @@ there drawing one rectangle per frame. So Moonlight 360 has a **hybrid decoder**
 3. **The CPU replays** only the intra macroblocks, which need their already-decoded neighbours, on six threads.
 
 It is **bit-exact**: the output matches FFmpeg's to the last pixel on every frame of every test clip, both in the
-Mac test (`tools/hybrid_test`) and on the console (`hybench`). It is **not faster yet**. At 1080p the GPU part takes
+PC test (`dev/hybrid_test`) and on the console (`hybench`). It is **not faster yet**. At 1080p the GPU part takes
 about 33 ms, against 19 ms for the CPU decoding the same frame by itself. Next on the list:
 
 - keep the frames on the GPU instead of untiling them back for the CPU (10 ms);
@@ -121,7 +121,7 @@ keyframe, and you'll see a glitch rather than a crash.
   packets (1392 or 1024 bytes). Nobody knows why the adapter does this. It took a relay that held back one stream
   at a time to find out.
 - **The shader compiler sometimes lies.** xsdk's GLSL compiler (xost) silently compiles `mat4 * vec4` into an
-  empty program, and a pixel shader that never writes its colour hangs the GPU. `tools/check_shaders.py` now fails
+  empty program, and a pixel shader that never writes its colour hangs the GPU. `scripts/check_shaders.py` now fails
   the build on any shader that comes out empty.
 - **Vector `max()` and `length()` miscompile too.** That's where the mysterious diamond pattern behind the menus
   came from. The shape shader is now written one scalar at a time, and the diamonds are gone.
@@ -139,59 +139,73 @@ cd moonlight360
 # The xsdk GCC 15 toolchain. This takes about 10 minutes, once. Good time for a coffee.
 docker build -t moonlight-xsdk-toolchain -f docker/xsdk-toolchain.dockerfile third_party/xsdk/tools/toolchain
 
-run() { docker run --rm -v "$PWD":/work moonlight-xsdk-toolchain /work/scripts/$1; }
-run build-xsdk.sh             # the SDK
-run build-ffmpeg-xsdk-vmx.sh  # FFmpeg with the Xenon AltiVec patch and the GPU decoder hook
-run build-app.sh              # -> build/app/dist/moonlight360.xex
+run() { docker run --rm -v "$PWD":/work moonlight-xsdk-toolchain /work/$1; }
+run scripts/build-xsdk.sh     # the SDK
+run scripts/build-ffmpeg.sh   # FFmpeg with the Xenon AltiVec patch and the GPU decoder hook
+run scripts/build-app.sh      # -> build/app/dist/moonlight360.xex
 ```
 
 Forgot `--recursive`? Run `git submodule update --init --recursive`.
 
 The build applies the patches in `patches/` to the submodules by itself, and skips any that are already applied.
 
-### Benchmarks and tests (optional)
+That's all you need for the app. Everything else lives in `dev/`.
 
-```sh
-tools/make_clips.sh            # the test clips, reproducible (needs ffmpeg and x264 on the host)
-run build-ffmpeg-xsdk.sh       # plain-C FFmpeg, for comparison
-run build-bench-xsdk.sh        # decbench.xex, decbench_vmx.xex, hybench.xex
-tools/hybrid_test/build.sh bench/data/*.h264   # the GPU decoder's maths, checked on your PC
-tools/menu_preview/build.sh    # renders the menus to build/preview/*.png
-```
+## Developer tools (`dev/`)
 
-- `decbench` times decoding on the console and checks every frame against checksums from a PC.
-- `hybench` runs the hybrid decoder against plain decoding. A watchdog reboots the console if the GPU hangs, so you
-  don't have to get up.
+You don't need anything in `dev/` to build or use Moonlight 360. It's what we used to make the app, kept for
+anyone who wants to work on it. Here's what each tool is for.
 
-## Development workflow
+**Running code on the console without walking to it: `devlaunch` and `devserver.py`.**
+Copying a `.xex` over FTP and launching it from Aurora takes a minute, and you do it after every change. The
+launcher cuts that to a single command on the PC, and it brings the logs back:
 
-Copying `.xex` files over FTP gets old around the third time. So there's a launcher:
-
-1. Build `devlaunch` (`run build-devlaunch.sh`) and copy `build/devlaunch/dist/devlaunch.xex` to the console.
-   Next to it, put a `devlaunch.txt` that contains `<your PC's IP> 7380`.
-2. On the PC, run `python3 tools/devserver.py`.
-3. To send a new build to the console: `python3 tools/devserver.py --bump`. The console downloads it and runs it,
-   and when the program exits, its logs are uploaded to `build/devserver/logs/`.
+1. Build the launcher with `run dev/scripts/build-devlaunch.sh` and copy `build/devlaunch/dist/devlaunch.xex` to
+   the console. Next to it, put a `devlaunch.txt` that contains `<your PC's IP> 7380`.
+2. On the PC, run `python3 dev/devserver.py`.
+3. To run a new build on the console: `python3 dev/devserver.py --bump`. The console downloads it and runs it, and
+   when the program exits, its logs are uploaded to `build/devserver/logs/`.
 
 Other targets are `--set-target decbench`, `hybench` and `devlaunch`; the last one updates the launcher itself.
-`--args "autotest seconds=120"` makes the app connect, stream for that long and report the result with no one
-holding the controller.
+With `--args "autotest seconds=120"`, the app connects, streams for that long and reports how it went, with no one
+holding the controller. The launcher also makes itself DashLaunch's boot program and can reboot the console
+remotely, which matters when the console's Wi-Fi goes deaf (see above) and you're in another room.
 
-`devlaunch` also makes itself DashLaunch's default boot program. If it can't reach the server for about 30 s, it
-reboots the console, at most twice in a row. Being able to reboot remotely matters for a console whose Wi-Fi can
-go deaf.
+**Measuring speed: `dev/bench/`.**
+`decbench` times H.264 decoding on the console in every setup from the [Performance](#performance) table. It checks
+each frame against checksums made on a PC, so a faster but wrong decoder can't sneak in. `hybench` does the same
+for the GPU decoder. It has a watchdog that reboots the console if the GPU hangs, so you don't have to get up.
+
+**Checking the GPU decoder on a PC: `dev/hybrid_test/`.**
+This runs the GPU decoder's maths (the same C model the shaders follow) on a PC and compares every pixel with
+FFmpeg's output. It takes seconds, where a console round-trip takes minutes, so a mistake shows up before it can hang
+a console. You only need it if you change the GPU decoder (`app/src/gpumc.c`,
+`app/shaders/mc_*`, or the FFmpeg hook).
+
+**Seeing the menus without a console: `dev/menu_preview/`.**
+This draws the real menu code into PNGs on a PC. The screenshots in this README come from it.
+
+**Test clips: `dev/make_clips.sh`.**
+This makes the 1080p clips that the benchmarks and the PC test decode. A fixed random seed makes the clips, and
+therefore the checksums, identical on every machine.
+
+```sh
+dev/make_clips.sh                  # test clips (needs ffmpeg and x264 on the PC)
+run dev/scripts/build-ffmpeg-c.sh  # plain-C FFmpeg, decbench's baseline
+run dev/scripts/build-bench.sh     # decbench.xex, decbench_vmx.xex, hybench.xex
+dev/hybrid_test/build.sh dev/bench/data/*.h264
+dev/menu_preview/build.sh          # -> build/preview/*.png
+```
 
 ## Layout
 
 ```
 app/          the client: src/ (C), shaders/ (GLSL for xost), compat/ (POSIX bits xsdk lacks)
-devlaunch/    the development launcher
-common/       code shared by the app, devlaunch and the benchmarks
-bench/        console benchmarks (xsdk/) and the reference motion compensation (source/mc_ref.c)
+scripts/      the app's build scripts (run inside the toolchain container) and the shader check
 patches/      changes to FFmpeg and moonlight-common-c, applied at build time
-scripts/      build scripts, run inside the toolchain container
-tools/        devserver, clip maker, menu renderer, shader checker, GPU decoder test
 docker/       the toolchain image
+docs/         screenshots
+dev/          developer tools: launcher + server, benchmarks, PC tests, menu renderer, test clips
 third_party/  submodules: xsdk, FFmpeg, moonlight-tv (libgamestream + moonlight-common-c), mbedtls, curl, expat, opus
 ```
 
@@ -203,7 +217,7 @@ third_party/  submodules: xsdk, FFmpeg, moonlight-tv (libgamestream + moonlight-
 - [xsdk](https://github.com/xenosworks/xsdk): the open Xbox 360 SDK this is built on, including its GCC 15
   toolchain and the xost shader compiler, quirks and all.
 - [FFmpeg](https://ffmpeg.org), [Opus](https://opus-codec.org), mbedTLS, curl and expat.
-- [Xenia](https://github.com/xenia-project/xenia): its texture-tiling code, ported in `tools/hybrid_test/tiled.c`.
+- [Xenia](https://github.com/xenia-project/xenia): its texture-tiling code, ported in `dev/hybrid_test/tiled.c`.
 - [Free60](https://free60.org) and libxenon, for documenting the hardware, the SMC sensors included.
 
 ## License

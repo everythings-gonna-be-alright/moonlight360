@@ -1,5 +1,5 @@
 /*
- * devlaunch: the console side of tools/devserver.py.
+ * devlaunch: the console side of dev/devserver.py.
  *
  * devlaunch.txt beside the .xex: "<Mac IP> <port>", e.g. "192.168.1.20 7380". Optional further lines:
  *   noreboot            never reboot the console automatically
@@ -12,7 +12,7 @@
  * make it reboot for ever. To come back here after the reboot by itself, set DashLaunch's Default to this .xex.
  * On start it makes itself DashLaunch's Default (make_default below), then uploads every *.log beside it (except its own), then shows the server's current target.
  * A downloads the target's files beside it and launches it, passing this .xex's path so the program comes back here
- * when it ends (common/devreturn.c). Y asks the server again; Back leaves to the dashboard.
+ * when it ends (app/src/devreturn.c). Y asks the server again; Back leaves to the dashboard.
  *
  * Auto-run: it asks the server every 2 s. When the manifest's "run" number differs from the last one run (kept in
  * devlaunch.run beside the .xex), it counts down 3 s (B cancels) and runs the target by itself. The number is saved
@@ -287,7 +287,7 @@ static bool show_manifest(Manifest *m)
     say("Asking %s:%d for the current build...", server_ip, server_port);
     draw();
     if (fetch_manifest(m) != 0) {
-        say("No answer. Is tools/devserver.py running on the Mac?");
+        say("No answer. Is dev/devserver.py running on the Mac?");
         say("Y: try again    Back: dashboard");
         return false;
     }

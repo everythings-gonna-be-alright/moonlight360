@@ -1,5 +1,5 @@
 #version 450
-// H.264 chroma inter prediction, four pixels a texel: bench/source/mc_ref.c's mc_ref_chroma. Pixels 0-1 and 2-3
+// H.264 chroma inter prediction, four pixels a texel: dev/bench/source/mc_ref.c's mc_ref_chroma. Pixels 0-1 and 2-3
 // each sit under one 4x4 luma block, whose vector in quarter luma samples is eighths of a chroma sample.
 layout(location = 0) in vec2 v_pixel;
 layout(location = 0) out vec4 o_color;

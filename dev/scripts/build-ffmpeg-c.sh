@@ -1,6 +1,7 @@
 #!/bin/bash
-# Cross-compiles a minimal FFmpeg (H.264 decoder + parser, pthreads) for xsdk.
-# Run: docker run --rm -v "$PWD":/work moonlight-xsdk-toolchain /work/scripts/build-ffmpeg-xsdk.sh
+# Cross-compiles a minimal FFmpeg (H.264 decoder + parser, pthreads) for xsdk in plain C, without AltiVec: decbench's
+# baseline. The app uses scripts/build-ffmpeg.sh.
+# Run: docker run --rm -v "$PWD":/work moonlight-xsdk-toolchain /work/dev/scripts/build-ffmpeg-c.sh
 set -euo pipefail
 XSDK=/work/third_party/xsdk
 TC=/opt/xsdk-gcc/bin/powerpc-xsdk-elf-

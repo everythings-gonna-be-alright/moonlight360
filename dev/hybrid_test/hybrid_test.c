@@ -2,7 +2,7 @@
  * Checks the hybrid decoder's CPU half on the Mac: decodes a clip normally, then again with h264_xenon.c's hook on
  * and mc_ref.c standing in for the GPU, and compares every frame. Deblocking is off in both (the hybrid needs it off).
  *
- *     tools/hybrid_test/build.sh bench/data/clip1080_cavlc_s6_12500.h264
+ *     dev/hybrid_test/build.sh dev/bench/data/clip1080_cavlc_s6_12500.h264
  */
 #include <stdbool.h>
 #include <stdio.h>
