@@ -161,7 +161,7 @@ static void refresh_reset(void)
 {
     memset(&refresh, 0, sizeof refresh);
     refresh.period_us = 1000000.0 / 60.0;
-    refresh.reserve_us = 6000.0;
+    refresh.reserve_us = 5000.0;
 }
 
 /* Right after xsdk_present_begin: learns the refresh timing; returns how long until the next refresh, in us. */
@@ -196,9 +196,12 @@ static void refresh_check(uint32_t last_flip_vblank)
     refresh.frames++;
     if (last_flip_vblank > refresh.target_vblank) {
         refresh.misses++;
-        refresh.reserve_us = refresh.reserve_us + 1000.0 < 12000.0 ? refresh.reserve_us + 1000.0 : 12000.0;
+        /* Capped: drawing takes about a millisecond (log, 2026-11-23), and misses come in short bursts whatever the
+         * reserve, so a burst mustn't push it up to where most frames wait a refresh (12-13 ms display at 5 ms of
+         * reserve, ~20 at 11). */
+        refresh.reserve_us = refresh.reserve_us + 500.0 < 7000.0 ? refresh.reserve_us + 500.0 : 7000.0;
     } else {
-        /* 1 ms up per miss, 5 us down per hit: settles where about one frame in 200 misses. */
+        /* 0.5 ms up per miss, 5 us down per hit. */
         refresh.reserve_us = refresh.reserve_us - 5.0 > 3000.0 ? refresh.reserve_us - 5.0 : 3000.0;
     }
     refresh.target_vblank = 0;
