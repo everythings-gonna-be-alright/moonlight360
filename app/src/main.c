@@ -44,6 +44,7 @@ enum {
     BUFFERS = 2,
     SWAP_INTERVAL = 1,
     BEGIN_TIMEOUT_MS = 5000,
+    LOW_LATENCY_WAIT_MS = 10,
     /* Held for MENU_HOLD_MS while streaming: opens the stream menu. */
     MENU_COMBO = INPUT_GAMEPAD_BACK | INPUT_GAMEPAD_START,
     MENU_HOLD_MS = 1000,
@@ -101,34 +102,81 @@ static void net_stats(NetStats *net)
     }
 }
 
-static void stats_line(char *out, size_t size, uint32_t shown_frames)
+/* Display latency: from a frame's decoding to its flip, which is when xsdk_present_begin next returns (with two front
+ * buffers it waits for the frame queued last to show). On LiGetMicroseconds' clock, like video.c's times. */
+static uint64_t queued_decoded_us;   /* the frame queued last, if it was a new one; 0 if not */
+static struct {
+    uint64_t start_us;
+    double sum_ms;
+    uint32_t frames;
+    float avg_ms;   /* last second's; -1 before there is one */
+} display = { .avg_ms = -1.0f };
+
+static void display_flipped(void)
+{
+    const uint64_t now = LiGetMicroseconds();
+    if (queued_decoded_us) {
+        display.sum_ms += (double)(now - queued_decoded_us) / 1000.0;
+        display.frames++;
+        queued_decoded_us = 0;
+    }
+    if (now - display.start_us >= 1000000) {
+        display.avg_ms = display.frames ? (float)(display.sum_ms / display.frames) : display.avg_ms;
+        display.start_us = now;
+        display.sum_ms = 0;
+        display.frames = 0;
+    }
+}
+
+/* The stats panel's first two lines, refreshed once a second: the stream, and where its latency goes. */
+static void stats_lines(char *out, size_t size, char *latency_out, size_t latency_size, uint32_t shown_frames)
 {
     static uint64_t last_ms;
     static uint32_t last_decoded, last_shown;
-    static char line[260] = "";
+    static char line[160] = "", latency[160] = "Latency: measuring";
     uint64_t now = now_ms();
     if (now - last_ms >= 1000) {
         VideoStats v;
         AudioStats a;
+        NetStats net;
         video_get_stats(&v);
         audio_get_stats(&a);
-        float seconds = (now - last_ms) / 1000.0f;
-        snprintf(line, sizeof line,
-                 "decode %.0f fps (%.1f ms)  shown %.0f fps  dropped %u  errors %u  audio gaps %u  %s%s",
-                 (v.decoded - last_decoded) / seconds, v.decode_ms_avg, (shown_frames - last_shown) / seconds,
+        net_stats(&net);
+        const float seconds = (now - last_ms) / 1000.0f;
+        const float decoded_fps = (v.decoded - last_decoded) / seconds, shown_fps = (shown_frames - last_shown) / seconds;
+        snprintf(line, sizeof line, "%.0f fps  dropped %u  errors %u  audio gaps %u  %s%s", shown_fps,
                  (unsigned)v.dropped, (unsigned)v.errors, (unsigned)a.silent_frames,
-                 v.cabac < 0 ? "" : v.cabac ? "CABAC" : "CAVLC", v.fast_decode ? "  fast decode" : "");
+                 v.cabac < 0 ? "" : v.cabac ? "CABAC" : "CAVLC", v.fast_decode ? "  fast" : "");
         if (v.gpu_decode) {
             const size_t n = strlen(line);
-            snprintf(line + n, sizeof line - n, "  GPU decode %.1f + replay %.1f ms", v.gpu_ms, v.replay_ms);
+            snprintf(line + n, sizeof line - n, "  GPU %.0f+%.0f ms", v.gpu_ms, v.replay_ms);
         }
+
+        /* PC (the host's own figure) + network (half the ping, plus first to last packet) + decode (queue included)
+         * + display (to the flip). */
+        const float net_ms = (net.rtt_ms >= 0 ? net.rtt_ms / 2.0f : 0.0f) + v.receive_ms;
+        if (v.decoded == 0 || display.avg_ms < 0) {
+            snprintf(latency, sizeof latency, "Latency: measuring");
+        } else {
+            const float known = net_ms + v.decode_latency_ms + display.avg_ms;
+            if (v.host_ms >= 0)
+                snprintf(latency, sizeof latency, "Latency %.0f ms = PC %.0f + net %.0f + decode %.0f + display %.0f",
+                         v.host_ms + known, v.host_ms, net_ms, v.decode_latency_ms, display.avg_ms);
+            else
+                snprintf(latency, sizeof latency, "Latency %.0f+ ms = PC ? + net %.0f + decode %.0f + display %.0f",
+                         known, net_ms, v.decode_latency_ms, display.avg_ms);
+        }
+
         /* Every 5 s into the log too, so a freeze shows up there. */
         static unsigned logged;
         if (++logged % 5 == 0) {
-            NetStats net;
-            net_stats(&net);
-            printf("[I] stats: %s  ping %d ms (+-%d)  loss %.1f%% (%u frames)\n", line, net.rtt_ms, net.rtt_var_ms,
-                   net.loss_pct, (unsigned)net.lost_frames);
+            printf("[I] stats: decode %.0f fps (%.1f ms)  shown %.0f fps  dropped %u  errors %u  audio gaps %u  %s%s"
+                   "  ping %d ms (+-%d)  loss %.1f%% (%u frames)\n",
+                   decoded_fps, v.decode_ms_avg, shown_fps, (unsigned)v.dropped, (unsigned)v.errors,
+                   (unsigned)a.silent_frames, v.cabac < 0 ? "" : v.cabac ? "CABAC" : "CAVLC",
+                   v.fast_decode ? "  fast decode" : "", net.rtt_ms, net.rtt_var_ms, net.loss_pct,
+                   (unsigned)net.lost_frames);
+            printf("[I] stats: %s\n", latency);
             diag_log("streaming");
             netfix_log_datagrams();
         }
@@ -137,6 +185,7 @@ static void stats_line(char *out, size_t size, uint32_t shown_frames)
         last_shown = shown_frames;
     }
     snprintf(out, size, "%s", line);
+    snprintf(latency_out, latency_size, "%s", latency);
 }
 
 /* Automatic test mode: devlaunch passes "autotest seconds=N draw=0/1 decode=0/1 tiled=0/1 packet=N bitrate=N
@@ -243,7 +292,7 @@ static int run_headless(void)
                 printf("[I] t+%4.1f s received: %s\n", (now_ms() - stream_start) / 1000.0, counts);
                 last_line = now_ms();
             }
-            AVFrame *frame = video_take_frame();
+            AVFrame *frame = video_take_frame(NULL);
             if (frame)
                 av_frame_free(&frame);
             if (now_ms() - stream_start >= (uint64_t)test.seconds * 1000) {
@@ -378,17 +427,28 @@ int main(void)
             overlay_close();
         }
 
-        if (streaming) {
-            AVFrame *frame = video_take_frame();
+        /* Normally the newest frame is taken now, before waiting for the refresh, and shows on the one after: up to
+         * two refreshes after it was decoded. With low latency it is taken after the wait, waiting a little more for
+         * one if none is ready, so a frame decoded in that time shows on the next refresh. */
+        const bool late_take = streaming && config.low_latency && config.draw;
+        uint64_t new_frame_us = 0;
+        if (streaming && !late_take) {
+            uint64_t decoded_us;
+            AVFrame *frame = video_take_frame(&decoded_us);
             if (frame && !config.draw) {
                 av_frame_free(&frame);   /* test switch: decoded, never copied to the GPU */
                 shown_frames++;
             } else if (frame) {
                 render_set_frame(frame);
+                new_frame_us = decoded_us;
                 shown_frames++;
             }
-        } else if (was_streaming) {
+        } else if (!streaming && was_streaming) {
             render_clear();
+        }
+        if (streaming && !was_streaming) {   /* a new stream: no display latency yet */
+            queued_decoded_us = 0;
+            display.avg_ms = -1.0f;
         }
         was_streaming = streaming;
 
@@ -396,6 +456,20 @@ int main(void)
         if (!NT_SUCCESS(xsdk_present_begin(&address, BEGIN_TIMEOUT_MS))) {
             printf("[E] xsdk_present_begin timed out\n");
             break;
+        }
+        if (streaming)
+            display_flipped();   /* the frame queued last is on screen now */
+        if (late_take) {
+            /* Room for drawing before the next refresh, 16.7 ms after this one: the stream and overlay take the GPU
+             * a few ms. */
+            video_wait_frame(LOW_LATENCY_WAIT_MS);
+            uint64_t decoded_us;
+            AVFrame *frame = video_take_frame(&decoded_us);
+            if (frame) {
+                render_set_frame(frame);
+                new_frame_us = decoded_us;
+                shown_frames++;
+            }
         }
         gpudec_service();   /* GPU decoding's work for the decode thread, before this frame's drawing */
         xsdk_gpu_set_target(width, height);
@@ -405,14 +479,14 @@ int main(void)
             if (!render_draw(width, height))
                 ui_draw_status(width, height, "Starting the stream", "Waiting for the first frame from the PC\xE2\x80\xA6",
                                NULL, true);
-            char line[260];
-            stats_line(line, sizeof line, shown_frames);
+            char line[160], latency[160];
+            stats_lines(line, sizeof line, latency, sizeof latency, shown_frames);
             if (config.show_stats) {
                 PerfReadings perf;
                 perf_get(&perf);
                 static NetStats net;   /* 90 arrivals: off the stack */
                 net_stats(&net);
-                ui_draw_stats(line, &perf, &net);
+                ui_draw_stats(line, latency, &perf, &net);
             }
             overlay_draw(width, height, config.app);
         } else if (in_session) {
@@ -423,6 +497,7 @@ int main(void)
         xsdk_gpu_resolve(address, width, height, CLEAR_ARGB);
         perf_gpu_frame_end();
         xsdk_present_end();
+        queued_decoded_us = new_frame_us;
         render_frame_submitted();
         gfx_frame_end();
 

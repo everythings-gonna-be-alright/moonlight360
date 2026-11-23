@@ -17,8 +17,11 @@ void video_set_decode_enabled(bool enabled);
 /* Before a stream starts: the decode threads' priority (default 0). */
 void video_set_decode_priority(int priority);
 
-/* The newest decoded frame not yet taken, or NULL; the caller frees it with av_frame_free. */
-struct AVFrame *video_take_frame(void);
+/* The newest decoded frame not yet taken, or NULL; the caller frees it with av_frame_free. decoded_us (if not NULL)
+ * gets when it was decoded, on LiGetMicroseconds' clock. */
+struct AVFrame *video_take_frame(uint64_t *decoded_us);
+/* Waits up to timeout_ms for a decoded frame to be waiting; whether one is. */
+bool video_wait_frame(int timeout_ms);
 
 typedef struct {
     uint32_t decoded;      /* frames decoded since the stream started */
@@ -29,6 +32,9 @@ typedef struct {
     bool fast_decode;
     bool gpu_decode;       /* experimental GPU decoding is running */
     float gpu_ms, replay_ms;   /* with it: the GPU's part and the CPU's replay, last second's average a frame */
+    /* Latency, last second's average a decoded frame, in ms: the host's capture and encode (-1 if it doesn't say),
+     * first to last packet of a frame, and frame complete to decoded (queue included). */
+    float host_ms, receive_ms, decode_latency_ms;
 } VideoStats;
 
 void video_get_stats(VideoStats *stats);

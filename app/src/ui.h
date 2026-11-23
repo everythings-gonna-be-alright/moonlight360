@@ -15,8 +15,8 @@ void ui_draw_header(void);
 void ui_draw_status(uint32_t width, uint32_t height, const char *title, const char *body, const char *pin, bool busy);
 /* Button hints along the bottom: buttons[i] (see gfx_button) with labels[i]; a NULL label shares the next one's. */
 void ui_draw_hints(const char *buttons, const char *const *labels);
-/* The stats panel at the top left, over the video: the stream's line, CPU per hardware thread and GPU, temperatures,
- * then ping, lost frames and a graph of the last frames' arrival times. */
-void ui_draw_stats(const char *line, const PerfReadings *perf, const NetStats *net);
+/* The stats panel at the top left, over the video, four lines: the stream, its latency, the network (ping, lost
+ * frames, a graph of the last frames' arrivals), and load (CPU per hardware thread, GPU, CPU/GPU temperatures). */
+void ui_draw_stats(const char *line, const char *latency, const PerfReadings *perf, const NetStats *net);
 /* Temperatures, small, at the bottom right of the menus. */
 void ui_draw_temperatures(const PerfReadings *perf);

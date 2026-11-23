@@ -11,6 +11,7 @@ typedef struct {
     bool show_stats;    /* overlay with frame rates and decode times */
     bool fast_decode;   /* skip H.264's deblocking filter: faster, slightly blockier */
     bool gpu_decode;    /* experimental: the GPU predicts each frame (gpudec.c); implies no deblocking */
+    bool low_latency;   /* draw each frame as soon as it is decoded, not on the next refresh after (main.c) */
     bool decode;        /* test switch: false receives video but never decodes it */
     bool draw;
     bool audio_output;

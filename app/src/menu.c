@@ -21,6 +21,7 @@ enum {
     ITEM_BITRATE,
     ITEM_FAST_DECODE,
     ITEM_GPU_DECODE,
+    ITEM_LOW_LATENCY,
     ITEM_STATS,
     ITEM_AUDIO_ON_HOST,
     ITEM_AUDIO_PACKETS,
@@ -36,7 +37,7 @@ enum {
     TAB_NETWORK,
     TAB_DEBUG,
     TABS,
-    TAB_ITEMS_MAX = 6,
+    TAB_ITEMS_MAX = 7,
 };
 
 enum {
@@ -52,7 +53,7 @@ enum {
     CONTENT_X = 80,
     CONTENT_RIGHT = 1200,
     CONTENT_Y = 136,
-    ROW_H = 62,
+    ROW_H = 58,
     HELP_CHARS = (CONTENT_RIGHT - CONTENT_X - 32) / 10,
     PICKER_VISIBLE = 6,
     PICKER_Y = 196,
@@ -66,7 +67,8 @@ typedef struct {
 
 static const Tab tabs[TABS] = {
     { "Play", 3, { ITEM_CONNECT, ITEM_APP, ITEM_HOST } },
-    { "Video", 6, { ITEM_RESOLUTION, ITEM_FPS, ITEM_BITRATE, ITEM_FAST_DECODE, ITEM_GPU_DECODE, ITEM_STATS } },
+    { "Video", 7, { ITEM_RESOLUTION, ITEM_FPS, ITEM_BITRATE, ITEM_FAST_DECODE, ITEM_GPU_DECODE, ITEM_LOW_LATENCY,
+                   ITEM_STATS } },
     { "Network", 3, { ITEM_AUDIO_ON_HOST, ITEM_AUDIO_PACKETS, ITEM_PACKET_SIZE } },
     { "Debug", 2, { ITEM_DECODE, ITEM_DRAW } },
 };
@@ -190,7 +192,7 @@ static int step_choice(int i, int count, int step)
 
 static bool is_toggle(int item)
 {
-    return item == ITEM_FAST_DECODE || item == ITEM_GPU_DECODE || item == ITEM_STATS || item == ITEM_DECODE ||
+    return item == ITEM_FAST_DECODE || item == ITEM_GPU_DECODE || item == ITEM_LOW_LATENCY || item == ITEM_STATS || item == ITEM_DECODE ||
            item == ITEM_DRAW;
 }
 
@@ -223,6 +225,9 @@ static void change(int item, int step)
         break;
     case ITEM_GPU_DECODE:
         config->gpu_decode = !config->gpu_decode;
+        break;
+    case ITEM_LOW_LATENCY:
+        config->low_latency = !config->low_latency;
         break;
     case ITEM_AUDIO_ON_HOST:
         config->audio_on_host = !config->audio_on_host;
@@ -528,8 +533,12 @@ static void item_help(int item, const char **help, const char **warning)
         if (config->gpu_decode)
             *warning = "Beta: expect a lower frame rate than with it off, for now.";
         break;
+    case ITEM_LOW_LATENCY:
+        *help = "Draws each frame the moment it's decoded instead of on a fixed beat, so it reaches the TV up to a "
+                "refresh sooner. No tearing. Turn it off if the picture stutters.";
+        break;
     case ITEM_STATS:
-        *help = "Shows frame rate, decode time and drops at the top of the screen while streaming.";
+        *help = "Shows frame rate, latency, ping, lost frames and console load at the top of the screen.";
         break;
     case ITEM_AUDIO_ON_HOST:
         *help = "Where the game's sound plays. Apollo/Sunshine still send the audio stream either way, so this "
@@ -641,6 +650,9 @@ static void draw_value(int item, int32_t right, int32_t y, int32_t cy, bool sele
     case ITEM_GPU_DECODE:
         draw_switch(right, cy, config->gpu_decode);
         break;
+    case ITEM_LOW_LATENCY:
+        draw_switch(right, cy, config->low_latency);
+        break;
     case ITEM_STATS:
         draw_switch(right, cy, config->show_stats);
         break;
@@ -674,6 +686,7 @@ static const char *item_label(int item)
     case ITEM_BITRATE: return "Bitrate";
     case ITEM_FAST_DECODE: return "Fast decode";
     case ITEM_GPU_DECODE: return "GPU decoding (beta)";
+    case ITEM_LOW_LATENCY: return "Low-latency display";
     case ITEM_STATS: return "Stats overlay";
     case ITEM_AUDIO_ON_HOST: return "Sound plays on";
     case ITEM_AUDIO_PACKETS: return "Audio packets";

@@ -100,8 +100,38 @@ static int packet_capacity;
 static int moved_decode_thread;
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t frame_ready = PTHREAD_COND_INITIALIZER;   /* pending was set */
 static AVFrame *pending;   /* newest decoded frame, handed to the renderer */
 static VideoStats stats;
+static uint64_t pending_decoded_us;
+
+/* Latency sums over the current second, on LiGetMicroseconds' clock (the one DECODE_UNIT's times use). Decode
+ * thread only; the averages go into stats under lock. */
+static struct {
+    uint64_t start_us;
+    double host_ms, receive_ms, decode_ms;
+    uint32_t frames, host_frames;
+} lat;
+
+static void record_latency(const DECODE_UNIT *unit, uint64_t decoded_us)
+{
+    if (unit->frameHostProcessingLatency) {
+        lat.host_ms += unit->frameHostProcessingLatency / 10.0;
+        lat.host_frames++;
+    }
+    lat.receive_ms += (double)(unit->enqueueTimeUs - unit->receiveTimeUs) / 1000.0;
+    lat.decode_ms += (double)(decoded_us - unit->enqueueTimeUs) / 1000.0;
+    lat.frames++;
+    if (decoded_us - lat.start_us < 1000000)
+        return;
+    pthread_mutex_lock(&lock);
+    stats.host_ms = lat.host_frames ? (float)(lat.host_ms / lat.host_frames) : -1.0f;
+    stats.receive_ms = (float)(lat.receive_ms / lat.frames);
+    stats.decode_latency_ms = (float)(lat.decode_ms / lat.frames);
+    pthread_mutex_unlock(&lock);
+    memset(&lat, 0, sizeof lat);
+    lat.start_us = decoded_us;
+}
 static uint64_t window_start_us, window_decode_us;
 static uint32_t window_frames;
 
@@ -306,6 +336,9 @@ static int setup(int video_format, int width, int height, int redraw_rate, void 
     }
     memset(&stats, 0, sizeof stats);
     stats.cabac = -1;
+    stats.host_ms = -1.0f;
+    memset(&lat, 0, sizeof lat);
+    lat.start_us = LiGetMicroseconds();
     stats.fast_decode = fast_decode || gpu;
     stats.gpu_decode = gpu;
     window_start_us = now_us();
@@ -409,8 +442,12 @@ static int submit(PDECODE_UNIT unit)
             stats.dropped++;
         }
         pending = out;
+        const uint64_t decoded_us = LiGetMicroseconds();
+        pending_decoded_us = decoded_us;
         stats.decoded++;
+        pthread_cond_broadcast(&frame_ready);
         pthread_mutex_unlock(&lock);
+        record_latency(unit, decoded_us);
         window_frames++;
     }
     window_decode_us += now_us() - start;
@@ -433,11 +470,29 @@ static int submit(PDECODE_UNIT unit)
     return DR_OK;
 }
 
-struct AVFrame *video_take_frame(void)
+bool video_wait_frame(int timeout_ms)
+{
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_nsec += (long)timeout_ms * 1000000L;
+    deadline.tv_sec += deadline.tv_nsec / 1000000000L;
+    deadline.tv_nsec %= 1000000000L;
+    pthread_mutex_lock(&lock);
+    while (!pending)
+        if (pthread_cond_timedwait(&frame_ready, &lock, &deadline) != 0)
+            break;
+    const bool ready = pending != NULL;
+    pthread_mutex_unlock(&lock);
+    return ready;
+}
+
+struct AVFrame *video_take_frame(uint64_t *decoded_us)
 {
     pthread_mutex_lock(&lock);
     AVFrame *out = pending;
     pending = NULL;
+    if (decoded_us)
+        *decoded_us = pending_decoded_us;
     pthread_mutex_unlock(&lock);
     return out;
 }

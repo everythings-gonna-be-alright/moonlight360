@@ -36,6 +36,7 @@ bool config_load(const char *path, Config *c)
     c->audio_packet_ms = 20;
     c->audio_on_host = false;
     c->gpu_decode = false;
+    c->low_latency = false;
     c->net_priority = 2;
     c->decode_priority = 0;
     c->packet_size = 1392;
@@ -75,6 +76,8 @@ bool config_load(const char *path, Config *c)
             c->draw = atoi(value) != 0;
         else if (!strcmp(key, "gpu_decode"))
             c->gpu_decode = atoi(value) != 0;
+        else if (!strcmp(key, "low_latency"))
+            c->low_latency = atoi(value) != 0;
         else if (!strcmp(key, "audio_on_host"))
             c->audio_on_host = atoi(value) != 0;
         else if (!strcmp(key, "audio_packet_ms")) {
@@ -121,6 +124,8 @@ bool config_save(const char *path, const Config *c)
             "audio_on_host=%d\n"
             "# gpu_decode=1: experimental GPU decoding (the GPU predicts each frame; no deblocking)\n"
             "gpu_decode=%d\n"
+            "# low_latency=1: draws each frame as soon as it is decoded (up to a refresh sooner on the TV)\n"
+            "low_latency=%d\n"
             "# test switches: decode=0 receives video without decoding it, draw=0 decodes but never draws\n"
             "# packet_size: 1392 or 1024 bytes. Keep 1392 on Wi-Fi: smaller packets mean more packets per second, and\n"
             "# thousands of small packets a second make the console's Wi-Fi stop receiving until reboot\n"
@@ -128,7 +133,7 @@ bool config_save(const char *path, const Config *c)
             "draw=%d\n"
             "packet_size=%d\n",
             c->host, c->app, c->width, c->height, c->fps, c->bitrate_kbps, c->show_stats ? 1 : 0,
-            c->fast_decode ? 1 : 0, c->audio_packet_ms, c->audio_on_host ? 1 : 0, c->gpu_decode ? 1 : 0, c->decode ? 1 : 0, c->draw ? 1 : 0, c->packet_size);
+            c->fast_decode ? 1 : 0, c->audio_packet_ms, c->audio_on_host ? 1 : 0, c->gpu_decode ? 1 : 0, c->low_latency ? 1 : 0, c->decode ? 1 : 0, c->draw ? 1 : 0, c->packet_size);
     fclose(f);
     return true;
 }
