@@ -483,6 +483,8 @@ int main(void)
     bool in_session = false;          /* a session was started and hasn't come back to the menu yet */
     Autotest autotest = parse_autotest(&config);
     render_set_tiled(autotest.tiled);
+    if (config.input)
+        input_start();   /* reads the pads ~1000 times a second and sends them while streaming (input.c) */
     uint64_t autotest_stream_start = 0, autotest_retry_at = 0;
     bool autotest_stopped = false;
     int autotest_attempts = 1;
@@ -661,7 +663,10 @@ int main(void)
         render_frame_submitted();
         gfx_frame_end();
 
+        if (!streaming)
+            input_set_forward(INPUT_FORWARD_OFF);
         if (streaming && overlay_is_open()) {
+            input_set_forward(INPUT_FORWARD_NEUTRAL);
             switch (overlay_update(&input, &config.stats_mode)) {
             case OVERLAY_STATS:
                 config_save(CONFIG_PATH, &config);
@@ -689,13 +694,14 @@ int main(void)
                 combo_held_since = now_ms();
             } else if (now_ms() - combo_held_since >= MENU_HOLD_MS) {
                 combo_held_since = 0;
-                /* The menu takes the controller: release everything on the host first. */
-                input_send_neutral(&input);
+                /* The menu takes the controller: the input thread releases everything on the host. */
+                input_set_forward(INPUT_FORWARD_NEUTRAL);
                 overlay_open();
                 continue;
             }
+            /* The input thread sends the pads itself, as soon as they change. */
             if (config.input)
-                input_send(&input);
+                input_set_forward(INPUT_FORWARD_LIVE);
         } else if (in_session) {
             /* Connecting or pairing: the flow can't be interrupted mid-request, so Back leaves the app. */
             if (any_pressed(&input, INPUT_GAMEPAD_BACK))

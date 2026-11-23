@@ -1,4 +1,5 @@
-/* Controllers: read with XAM, sent to the host while streaming. */
+/* Controllers: read with XAM about 1000 times a second on a thread of their own, and sent to the host from there
+ * while streaming, so a press goes out within about a millisecond instead of waiting for the next screen refresh. */
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
@@ -10,16 +11,23 @@
 typedef struct {
     bool connected[INPUT_PADS];
     uint16_t buttons[INPUT_PADS];
-    uint16_t pressed[INPUT_PADS];   /* buttons that went down since the last poll */
+    uint16_t pressed[INPUT_PADS];   /* buttons that went down since the last input_poll (none are missed) */
     INPUT_GAMEPAD pad[INPUT_PADS];  /* full state: sticks and triggers too */
 } InputState;
 
+/* What the input thread sends to the host. */
+typedef enum {
+    INPUT_FORWARD_OFF,       /* nothing: no stream */
+    INPUT_FORWARD_LIVE,      /* the pads as they are */
+    INPUT_FORWARD_NEUTRAL,   /* every pad released, sticks centred: a menu has the controller */
+} InputForward;
+
+/* Starts the input thread (once). Without it nothing reads the pads. */
+void input_start(void);
+/* The pads as the thread last read them, with every button pressed since the previous call. */
 void input_poll(InputState *state);
-/* Sends every connected pad's state to the host (only changes are sent). */
-void input_send(const InputState *state);
-/* Sends every connected pad as released (nothing pressed, sticks centred), e.g. when a menu takes the controller. */
-void input_send_neutral(const InputState *state);
-/* Forgets what was sent (call when a stream starts). */
+void input_set_forward(InputForward mode);
+/* Forgets what was sent (call when a stream starts, before forwarding). */
 void input_reset(void);
 /* Stops rumble on every pad. */
 void input_stop_rumble(void);
