@@ -40,6 +40,11 @@ TARGETS = {
         "files": {"decbench.xex": ROOT / "build/bench-xsdk/decbench.xex",
                   "decbench_vmx.xex": ROOT / "build/bench-xsdk/decbench_vmx.xex"},
     },
+    # The AltiVec decode benchmark alone (its chroma-in-C passes give a before and after in one run).
+    "decbench_vmx": {
+        "launch": "decbench_vmx.xex",
+        "files": {"decbench_vmx.xex": ROOT / "build/bench-xsdk/decbench_vmx.xex"},
+    },
     # The hybrid decoder (FFmpeg parses, the GPU predicts) against plain decoding (dev/bench/xsdk/hybench.c).
     "hybench": {
         "launch": "hybench.xex",

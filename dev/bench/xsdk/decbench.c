@@ -50,6 +50,7 @@ typedef struct {
     uint32_t main_hw;
     uint32_t workers[6];
     int worker_count;
+    bool chroma_c;     /* chroma prediction and deblocking in C, as before ppc/h264_xenon_vmx.h: the "before" timing */
 } Pass;
 
 /* All passes as the app decodes now: 6 slice threads on the three cores. */
@@ -57,16 +58,22 @@ typedef struct {
 #define ALL_HW_SKIP 6, true, false, false, 2, { 3, 4, 5, 0, 1 }, 5
 #define ALL_HW_NO_MC 6, true, false, true, 2, { 3, 4, 5, 0, 1 }, 5
 #define ALL_HW_PARSE 6, true, true, false, 2, { 3, 4, 5, 0, 1 }, 5
-static const Pass passes[] = {
-    { "deblock", 0, ALL_HW }, { "skip deblock", 0, ALL_HW_SKIP }, { "no MC", 0, ALL_HW_NO_MC }, { "PARSE ONLY", 0, ALL_HW_PARSE },
-    { "deblock", 1, ALL_HW }, { "skip deblock", 1, ALL_HW_SKIP }, { "no MC", 1, ALL_HW_NO_MC }, { "PARSE ONLY", 1, ALL_HW_PARSE },
-    { "deblock", 2, ALL_HW }, { "skip deblock", 2, ALL_HW_SKIP }, { "no MC", 2, ALL_HW_NO_MC }, { "PARSE ONLY", 2, ALL_HW_PARSE },
-    { "deblock", 3, ALL_HW }, { "skip deblock", 3, ALL_HW_SKIP }, { "no MC", 3, ALL_HW_NO_MC }, { "PARSE ONLY", 3, ALL_HW_PARSE },
-    { "deblock", 4, ALL_HW }, { "skip deblock", 4, ALL_HW_SKIP }, { "no MC", 4, ALL_HW_NO_MC }, { "PARSE ONLY", 4, ALL_HW_PARSE },
-};
+/* A clip's passes; with the AltiVec build, the first two again with chroma in C, for a before and after. */
+#ifdef DECBENCH_VMX
+#define CLIP(n) \
+    { "deblock, chroma in C", n, ALL_HW, true }, { "deblock", n, ALL_HW }, \
+    { "skip deblock, chroma in C", n, ALL_HW_SKIP, true }, { "skip deblock", n, ALL_HW_SKIP }, \
+    { "no MC", n, ALL_HW_NO_MC }, { "PARSE ONLY", n, ALL_HW_PARSE }
+#else
+#define CLIP(n) \
+    { "deblock", n, ALL_HW }, { "skip deblock", n, ALL_HW_SKIP }, { "no MC", n, ALL_HW_NO_MC }, \
+    { "PARSE ONLY", n, ALL_HW_PARSE }
+#endif
+static const Pass passes[] = { CLIP(0), CLIP(1), CLIP(2), CLIP(3), CLIP(4) };
 
 extern void (*ff_h264_mb_hook)(const void *h, void *sl);
 extern int ff_h264_skip_mc;
+extern int ff_xenon_chroma_c;
 static void parse_only_hook(const void *h, void *sl)
 {
     (void)h, (void)sl;
@@ -158,6 +165,7 @@ static void run(const Pass *pass)
         ctx->skip_loop_filter = AVDISCARD_ALL;
     ff_h264_mb_hook = pass->parse_only ? parse_only_hook : NULL;
     ff_h264_skip_mc = pass->no_mc;
+    ff_xenon_chroma_c = pass->chroma_c;
     if (avcodec_open2(ctx, codec, NULL) < 0) {
         printf("%-40s  avcodec_open2 failed\n", pass->name);
         return;
@@ -215,7 +223,7 @@ static void run(const Pass *pass)
     qsort(gaps, gap_count, sizeof gaps[0], cmp_u32);
     const double avg = frames ? (last_us - first_us) / 1000.0 / frames : 0;
     const uint32_t expected = pass->skip_deblock ? clip->checksum_skip : clip->checksum;
-    printf("%-15s %-13s avg %6.2f ms (%5.1f fps)  p95 %6.2f ms  %08x %s\n", clip->name, pass->name, avg,
+    printf("%-15s %-26s avg %6.2f ms (%5.1f fps)  p95 %6.2f ms  %08x %s\n", clip->name, pass->name, avg,
            avg > 0 ? 1000.0 / avg : 0, gap_count ? gaps[gap_count * 95 / 100] / 1000.0 : 0, (unsigned)sum,
            pass->parse_only ? "(no picture: parsing alone)"
            : pass->no_mc   ? "(no picture: no motion compensation)"
@@ -223,6 +231,7 @@ static void run(const Pass *pass)
                              : "MISMATCH");
     ff_h264_mb_hook = NULL;
     ff_h264_skip_mc = 0;
+    ff_xenon_chroma_c = 0;
     fflush(stdout);
     (void)busy_us;
     av_packet_free(&pkt);

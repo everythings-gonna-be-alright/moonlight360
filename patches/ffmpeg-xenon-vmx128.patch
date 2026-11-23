@@ -12,20 +12,22 @@ index 9d1c1fc..e33ec7f 100644
                                            h264_mb.o h264_picture.o \
                                            h264_refs.o \
 diff --git a/libavcodec/h264_mb.c b/libavcodec/h264_mb.c
-index 2db0670..a312e8a 100644
+index 2db0670..cdddaeb 100644
 --- a/libavcodec/h264_mb.c
 +++ b/libavcodec/h264_mb.c
-@@ -787,6 +787,9 @@ static av_always_inline void hl_decode_mb_idct_luma(const H264Context *h, H264Sl
+@@ -787,6 +787,11 @@ static av_always_inline void hl_decode_mb_idct_luma(const H264Context *h, H264Sl
  
  #define BITS   8
  #define SIMPLE 1
 +/* Set: inter macroblocks get no motion compensation (decbench times what the GPU would take over). */
 +int ff_h264_skip_mc;
++/* Set before a decoder opens: chroma stays in C, not ppc/h264_xenon_vmx.h (decbench times one against the other). */
++int ff_xenon_chroma_c;
 +
  #include "h264_mb_template.c"
  
  #undef  BITS
-@@ -797,7 +800,19 @@ static av_always_inline void hl_decode_mb_idct_luma(const H264Context *h, H264Sl
+@@ -797,7 +802,19 @@ static av_always_inline void hl_decode_mb_idct_luma(const H264Context *h, H264Sl
  #define SIMPLE 0
  #include "h264_mb_template.c"
  
@@ -681,14 +683,304 @@ index ae3c1b1..904515c 100644
  #if HAVE_ALTIVEC
      if (!PPC_ALTIVEC(av_get_cpu_flags()))
          return;
+diff --git a/libavcodec/ppc/h264_xenon_vmx.h b/libavcodec/ppc/h264_xenon_vmx.h
+new file mode 100644
+index 0000000..9aac591
+--- /dev/null
++++ b/libavcodec/ppc/h264_xenon_vmx.h
+@@ -0,0 +1,249 @@
++/* H.264 chroma prediction and chroma deblocking for Xenon's VMX128 (Xbox 360), without vector integer multiplies.
++ * Part of FFmpeg, under its license (LGPL 2.1 or later, COPYING.LGPLv2.1); patches/ffmpeg-xenon-vmx128.patch.
++ * Self-contained (altivec.h only): dev/vmx_test checks each function against FFmpeg's C code under QEMU. */
++
++#ifndef AVCODEC_PPC_H264_XENON_VMX_H
++#define AVCODEC_PPC_H264_XENON_VMX_H
++
++#include <altivec.h>
++#include <stddef.h>
++#include <stdint.h>
++
++typedef __vector unsigned char xv_u8;
++typedef __vector signed char xv_s8;
++typedef __vector unsigned short xv_u16;
++typedef __vector signed short xv_s16;
++typedef __vector unsigned int xv_u32;
++
++#define XV_INLINE static inline __attribute__((always_inline))
++
++/* 16 bytes from src, of which bytes 0 to last are needed: never touches a 16-byte block past the one holding
++ * src[last], so it reads no further into memory than the C code does. */
++XV_INLINE xv_u8 xv_load(const uint8_t *src, int last)
++{
++    return vec_perm(vec_ld(0, src), vec_ld(last, src), vec_lvsl(0, src));
++}
++
++/* A weight of 0 to 7 as three masks, its bits 0, 1 and 2. */
++typedef struct {
++    xv_s16 bit0, bit1, bit2;
++} XvWeight;
++
++XV_INLINE XvWeight xv_weight(int w)
++{
++    const xv_s16 on = vec_splat_s16(-1), off = vec_splat_s16(0);
++    const XvWeight r = { w & 1 ? on : off, w & 2 ? on : off, w & 4 ? on : off };
++    return r;
++}
++
++/* (8 - w) * a + w * b, as 8a + w(b - a). */
++XV_INLINE xv_s16 xv_weigh(xv_s16 a, xv_s16 b, XvWeight w)
++{
++    const xv_s16 d = vec_sub(b, a);
++    xv_s16 r = vec_sl(a, vec_splat_u16(3));
++    r = vec_add(r, vec_and(d, w.bit0));
++    r = vec_add(r, vec_and(vec_sl(d, vec_splat_u16(1)), w.bit1));
++    return vec_add(r, vec_and(vec_sl(d, vec_splat_u16(2)), w.bit2));
++}
++
++/* Bytes 0 to 7 of v as eight 16-bit values. */
++XV_INLINE xv_s16 xv_widen(xv_u8 v)
++{
++    return (xv_s16)vec_mergeh(vec_splat_u8(0), v);
++}
++
++/* A row's eight pixels weighed with their right neighbours: (8 - x) * src[i] + x * src[i + 1]. */
++XV_INLINE xv_s16 xv_chroma_row(const uint8_t *src, int last, XvWeight wx)
++{
++    const xv_u8 v = xv_load(src, last);
++    return xv_weigh(xv_widen(v), xv_widen(vec_sld(v, v, 1)), wx);
++}
++
++/* Stores eight result bytes, held twice in r (bytes 0-7 and 8-15), at dst, which is 8-aligned: stvewx takes the
++ * word of r that the address selects. Only those eight bytes are written (another slice's thread may be writing the
++ * block beside them). With avg, the average with what dst holds, rounded up. */
++XV_INLINE void xv_store8(uint8_t *dst, xv_u8 r, int avg)
++{
++    if (avg)
++        r = vec_avg(r, vec_ld(0, dst));
++    vec_ste((xv_u32)r, 0, (unsigned int *)dst);
++    vec_ste((xv_u32)r, 4, (unsigned int *)dst);
++}
++
++/* FFmpeg's put/avg_h264_chroma_mc8 (h264chroma_template.c), bit for bit: an 8-wide block, h rows, at the
++ * eighth-pixel offset (x, y). The four weights factor into a horizontal pass, then a vertical one. dst 8-aligned. */
++XV_INLINE void xv_h264_chroma_mc8(uint8_t *dst, const uint8_t *src, ptrdiff_t stride, int h, int x, int y, int avg)
++{
++    const xv_u16 three = vec_splat_u16(3), four = vec_splat_u16(4), six = vec_splat_u16(6);
++    const xv_u16 thirty_two = vec_sl(vec_splat_u16(1), vec_splat_u16(5));
++    int i;
++    if (!(x | y)) {
++        /* Whole-pixel: a copy. Bytes 0-7 into both halves for the store. */
++        const xv_u8 twice = vec_and(vec_lvsl(0, (unsigned char *)0), vec_splat_u8(7));
++        for (i = 0; i < h; i++, src += stride, dst += stride) {
++            const xv_u8 v = xv_load(src, 7);
++            xv_store8(dst, vec_perm(v, v, twice), avg);
++        }
++    } else if (!y) {
++        /* Horizontal only: the row below is never read. ((8-x)a + xb) * 8 + 32 >> 6 */
++        const XvWeight wx = xv_weight(x);
++        for (i = 0; i < h; i++, src += stride, dst += stride) {
++            const xv_s16 row = xv_chroma_row(src, 8, wx);
++            const xv_s16 r = (xv_s16)vec_sr((xv_u16)vec_add(row, (xv_s16)four), three);
++            xv_store8(dst, vec_packsu(r, r), avg);
++        }
++    } else if (!x) {
++        /* Vertical only: the column to the right is never read. */
++        const XvWeight wy = xv_weight(y);
++        xv_s16 above = xv_widen(xv_load(src, 7));
++        for (i = 0; i < h; i++, dst += stride) {
++            src += stride;
++            const xv_s16 below = xv_widen(xv_load(src, 7));
++            const xv_s16 r = (xv_s16)vec_sr((xv_u16)vec_add(xv_weigh(above, below, wy), (xv_s16)four), three);
++            xv_store8(dst, vec_packsu(r, r), avg);
++            above = below;
++        }
++    } else {
++        const XvWeight wx = xv_weight(x), wy = xv_weight(y);
++        xv_s16 above = xv_chroma_row(src, 8, wx);
++        for (i = 0; i < h; i++, dst += stride) {
++            src += stride;
++            const xv_s16 below = xv_chroma_row(src, 8, wx);
++            const xv_s16 r = (xv_s16)vec_sr((xv_u16)vec_add(xv_weigh(above, below, wy), (xv_s16)thirty_two), six);
++            xv_store8(dst, vec_packsu(r, r), avg);
++            above = below;
++        }
++    }
++}
++
++/* ---- chroma deblocking ---- */
++
++/* |a - b| < limit, per byte. */
++XV_INLINE xv_u8 xv_diff_lt(xv_u8 a, xv_u8 b, xv_u8 limit)
++{
++    return (xv_u8)vec_cmplt(vec_or(vec_subs(a, b), vec_subs(b, a)), limit);
++}
++
++/* Which pixels an edge filters: |p0-q0| < alpha, |p1-p0| < beta, |q1-q0| < beta. */
++XV_INLINE xv_u8 xv_deblock_mask(xv_u8 p1, xv_u8 p0, xv_u8 q0, xv_u8 q1, xv_u8 alpha, xv_u8 beta)
++{
++    return vec_and(vec_and(xv_diff_lt(p0, q0, alpha), xv_diff_lt(p1, p0, beta)), xv_diff_lt(q1, q0, beta));
++}
++
++/* The normal filter: delta = clip(((q0 - p0) * 4 + (p1 - q1) + 4) >> 3, -tc, tc), p0 += delta, q0 -= delta; tc is
++ * zero for pixels left alone. In bytes, as FFmpeg's AltiVec luma filter (ppc/h264dsp.c, h264_deblock_p0_q0). */
++XV_INLINE void xv_deblock_p0_q0(xv_u8 p1, xv_u8 *p0, xv_u8 *q0, xv_u8 q1, xv_u8 tc)
++{
++    const xv_u8 one = vec_splat_u8(1);
++    const xv_u8 v160 = vec_sl(vec_splat_u8(10), vec_splat_u8(4));
++    xv_u8 stage1 = vec_avg(p1, vec_nor(q1, q1));         /* (p1 - q1 + 256) >> 1 */
++    xv_u8 stage2 = vec_sr(stage1, one);                  /* 64 + (p1 - q1) >> 2 */
++    stage1 = vec_avg(*q0, vec_nor(*p0, *p0));            /* (q0 - p0 + 256) >> 1 */
++    stage2 = vec_avg(stage2, vec_and(vec_xor(*p0, *q0), one));
++    stage2 = vec_adds(stage2, stage1);                   /* 160 + delta */
++    const xv_u8 down = vec_min(tc, vec_subs(v160, stage2));   /* -delta where negative, clipped */
++    const xv_u8 up = vec_min(tc, vec_subs(stage2, v160));     /* delta where positive, clipped */
++    *p0 = vec_adds(vec_subs(*p0, down), up);
++    *q0 = vec_adds(vec_subs(*q0, up), down);
++}
++
++/* The strong (intra) filter: p0 = (2 * p1 + p0 + q1 + 2) >> 2, likewise q0. In bytes: the average of p1 with the
++ * floor of (p0 + q1) / 2, rounded up, is the same number. */
++XV_INLINE xv_u8 xv_deblock_intra(xv_u8 p1, xv_u8 p0, xv_u8 q1)
++{
++    const xv_u8 floor_avg = vec_sub(vec_avg(p0, q1), vec_and(vec_xor(p0, q1), vec_splat_u8(1)));
++    return vec_avg(floor_avg, p1);
++}
++
++/* alpha, beta and the four tc values as vectors: tc as { t0, t0, t1, t1, t2, t2, t3, t3 } in both halves, a value for
++ * every two pixels of the edge. One trip through memory for all of them. */
++typedef struct {
++    xv_u8 alpha, beta, tc;
++} XvDeblock;
++
++XV_INLINE XvDeblock xv_deblock_params(int alpha, int beta, const int8_t *tc0)
++{
++    union {
++        xv_u8 v;
++        uint8_t b[16];
++    } t;
++    XvDeblock r;
++    t.b[0] = (uint8_t)alpha;
++    t.b[1] = (uint8_t)beta;
++    t.b[2] = t.b[3] = t.b[4] = t.b[5] = 0;
++    if (tc0) {
++        t.b[2] = (uint8_t)tc0[0];
++        t.b[3] = (uint8_t)tc0[1];
++        t.b[4] = (uint8_t)tc0[2];
++        t.b[5] = (uint8_t)tc0[3];
++    }
++    const xv_u8 params = vec_ld(0, t.b);
++    const xv_u8 twice = vec_and(vec_lvsl(0, (unsigned char *)0), vec_splat_u8(7));
++    const xv_u8 tc = vec_sld(params, params, 2);
++    const xv_u8 pairs = vec_perm(vec_mergeh(tc, tc), tc, twice);
++    r.alpha = vec_splat(params, 0);
++    r.beta = vec_splat(params, 1);
++    /* tc of zero or less: the pixels are left alone. */
++    r.tc = vec_and(pairs, (xv_u8)vec_cmpgt((xv_s8)pairs, vec_splat_s8(0)));
++    return r;
++}
++
++/* The filter on four vectors holding p1, p0, q0, q1; tc0 NULL for the intra filter. */
++XV_INLINE void xv_deblock_chroma(xv_u8 p1, xv_u8 *p0, xv_u8 *q0, xv_u8 q1, int alpha, int beta, const int8_t *tc0)
++{
++    const XvDeblock d = xv_deblock_params(alpha, beta, tc0);
++    const xv_u8 mask = xv_deblock_mask(p1, *p0, *q0, q1, d.alpha, d.beta);
++    if (tc0) {
++        xv_deblock_p0_q0(p1, p0, q0, q1, vec_and(d.tc, mask));
++    } else {
++        const xv_u8 new_p0 = xv_deblock_intra(p1, *p0, q1), new_q0 = xv_deblock_intra(q1, *q0, p1);
++        *p0 = vec_sel(*p0, new_p0, mask);
++        *q0 = vec_sel(*q0, new_q0, mask);
++    }
++}
++
++/* FFmpeg's h264_v_loop_filter_chroma (tc0 given) and its _intra (tc0 NULL), 8-bit: a horizontal edge, 8 pixels wide,
++ * pix 8-aligned on the row under it. The rows are loaded as the 16-byte blocks holding them; only the edge's own
++ * eight bytes of each are written back. */
++XV_INLINE void xv_h264_v_loop_filter_chroma(uint8_t *pix, ptrdiff_t stride, int alpha, int beta, const int8_t *tc0)
++{
++    const xv_u8 p1 = vec_ld(0, pix - 2 * stride), q1 = vec_ld(0, pix + stride);
++    xv_u8 p0 = vec_ld(0, pix - stride), q0 = vec_ld(0, pix);
++    xv_deblock_chroma(p1, &p0, &q0, q1, alpha, beta, tc0);
++    vec_ste((xv_u32)p0, 0, (unsigned int *)(pix - stride));
++    vec_ste((xv_u32)p0, 4, (unsigned int *)(pix - stride));
++    vec_ste((xv_u32)q0, 0, (unsigned int *)pix);
++    vec_ste((xv_u32)q0, 4, (unsigned int *)pix);
++}
++
++/* FFmpeg's h264_h_loop_filter_chroma (tc0 given) and its _intra (tc0 NULL), 8-bit: a vertical edge, 8 rows, pix at
++ * an even address on the column right of it. Each row's four pixels around the edge are gathered into p1, p0, q0, q1
++ * by rows; the two changed pixels of each row go back with byte stores. */
++XV_INLINE void xv_h264_h_loop_filter_chroma(uint8_t *pix, ptrdiff_t stride, int alpha, int beta, const int8_t *tc0)
++{
++    uint8_t *const row = pix - 2;
++    const xv_u8 r0 = xv_load(row, 3), r1 = xv_load(row + stride, 3);
++    const xv_u8 r2 = xv_load(row + 2 * stride, 3), r3 = xv_load(row + 3 * stride, 3);
++    const xv_u8 r4 = xv_load(row + 4 * stride, 3), r5 = xv_load(row + 5 * stride, 3);
++    const xv_u8 r6 = xv_load(row + 6 * stride, 3), r7 = xv_load(row + 7 * stride, 3);
++    /* Columns out of rows: three rounds of merges put the rows' first bytes side by side, then their second... */
++    const xv_u8 even = vec_mergeh(vec_mergeh(r0, r4), vec_mergeh(r2, r6));
++    const xv_u8 odd = vec_mergeh(vec_mergeh(r1, r5), vec_mergeh(r3, r7));
++    const xv_u8 p = vec_mergeh(even, odd), q = vec_mergel(even, odd);   /* p1 then p0; q0 then q1 */
++    const xv_u8 p1 = p, q1 = vec_sld(q, q, 8);
++    xv_u8 p0 = vec_sld(p, p, 8), q0 = q;
++    xv_deblock_chroma(p1, &p0, &q0, q1, alpha, beta, tc0);
++    /* { q0, p0 } of each row as a 16-bit value, splat across a vector: its odd bytes are that row's p0, its even ones
++     * q0, and stvebx stores the byte its address selects: p0 at pix - 1 (odd), q0 at pix (even). */
++    const xv_u16 pairs = (xv_u16)vec_mergeh(q0, p0);
++#define XV_STORE_ROW(n) { \
++        const xv_u8 both = (xv_u8)vec_splat(pairs, n); \
++        vec_ste(both, -1, pix + n * stride); \
++        vec_ste(both, 0, pix + n * stride); \
++    }
++    XV_STORE_ROW(0) XV_STORE_ROW(1) XV_STORE_ROW(2) XV_STORE_ROW(3)
++    XV_STORE_ROW(4) XV_STORE_ROW(5) XV_STORE_ROW(6) XV_STORE_ROW(7)
++#undef XV_STORE_ROW
++}
++
++#endif /* AVCODEC_PPC_H264_XENON_VMX_H */
 diff --git a/libavcodec/ppc/h264chroma_init.c b/libavcodec/ppc/h264chroma_init.c
-index bd0d213..32a4790 100644
+index bd0d213..974e772 100644
 --- a/libavcodec/ppc/h264chroma_init.c
 +++ b/libavcodec/ppc/h264chroma_init.c
-@@ -51,6 +51,9 @@
+@@ -49,8 +49,44 @@
+ #undef PREFIX_h264_chroma_mc8_num
+ #endif /* HAVE_ALTIVEC */
  
++#if HAVE_ALTIVEC
++#include "h264_xenon_vmx.h"
++
++extern int ff_xenon_chroma_c;
++/* The C versions, for a block the vector code can't take (dst or stride not 8-aligned; none in practice). */
++static h264_chroma_mc_func xenon_put_mc8_c, xenon_avg_mc8_c;
++
++static void put_h264_chroma_mc8_xenon(uint8_t *dst, const uint8_t *src, ptrdiff_t stride, int h, int x, int y)
++{
++    if (((uintptr_t)dst | (uintptr_t)stride) & 7)
++        xenon_put_mc8_c(dst, src, stride, h, x, y);
++    else
++        xv_h264_chroma_mc8(dst, src, stride, h, x, y, 0);
++}
++
++static void avg_h264_chroma_mc8_xenon(uint8_t *dst, const uint8_t *src, ptrdiff_t stride, int h, int x, int y)
++{
++    if (((uintptr_t)dst | (uintptr_t)stride) & 7)
++        xenon_avg_mc8_c(dst, src, stride, h, x, y);
++    else
++        xv_h264_chroma_mc8(dst, src, stride, h, x, y, 1);
++}
++#endif /* HAVE_ALTIVEC */
++
  av_cold void ff_h264chroma_init_ppc(H264ChromaContext *c, int bit_depth)
  {
++#if HAVE_ALTIVEC
++    /* Xenon (Xbox 360): the 8-wide blocks with shifts and adds (h264_xenon_vmx.h), not the code below. */
++    if (bit_depth <= 8 && !ff_xenon_chroma_c && PPC_ALTIVEC(av_get_cpu_flags())) {
++        xenon_put_mc8_c = c->put_h264_chroma_pixels_tab[0];
++        xenon_avg_mc8_c = c->avg_h264_chroma_pixels_tab[0];
++        c->put_h264_chroma_pixels_tab[0] = put_h264_chroma_mc8_xenon;
++        c->avg_h264_chroma_pixels_tab[0] = avg_h264_chroma_mc8_xenon;
++    }
++#endif
 +    /* Xenon's VMX128 (Xbox 360) lacks the vector integer multiplies this code uses: keep the C versions. */
 +    if (1)
 +        return;
@@ -696,10 +988,58 @@ index bd0d213..32a4790 100644
      const int high_bit_depth = bit_depth > 8;
  
 diff --git a/libavcodec/ppc/h264dsp.c b/libavcodec/ppc/h264dsp.c
-index 0650768..81c9599 100644
+index 0650768..7ad8009 100644
 --- a/libavcodec/ppc/h264dsp.c
 +++ b/libavcodec/ppc/h264dsp.c
-@@ -805,10 +805,7 @@ av_cold void ff_h264dsp_init_ppc(H264DSPContext *c, const int bit_depth,
+@@ -783,6 +783,47 @@ static void biweight_h264_pixels ## W ## _altivec(uint8_t *dst, uint8_t *src, pt
+ 
+ H264_WEIGHT(16)
+ H264_WEIGHT( 8)
++/* Xenon (Xbox 360): chroma deblocking for 4:2:0, 8-bit (h264_xenon_vmx.h). The C versions take an edge the vector
++ * code can't (pix or stride off its alignment; none in practice). */
++#include "h264_xenon_vmx.h"
++
++extern int ff_xenon_chroma_c;
++static void (*xenon_v_chroma_c)(uint8_t *pix, ptrdiff_t stride, int alpha, int beta, int8_t *tc0);
++static void (*xenon_h_chroma_c)(uint8_t *pix, ptrdiff_t stride, int alpha, int beta, int8_t *tc0);
++static void (*xenon_v_chroma_intra_c)(uint8_t *pix, ptrdiff_t stride, int alpha, int beta);
++static void (*xenon_h_chroma_intra_c)(uint8_t *pix, ptrdiff_t stride, int alpha, int beta);
++
++static void h264_v_loop_filter_chroma_xenon(uint8_t *pix, ptrdiff_t stride, int alpha, int beta, int8_t *tc0)
++{
++    if (((uintptr_t)pix | (uintptr_t)stride) & 7)
++        xenon_v_chroma_c(pix, stride, alpha, beta, tc0);
++    else if (tc0[0] > 0 || tc0[1] > 0 || tc0[2] > 0 || tc0[3] > 0)
++        xv_h264_v_loop_filter_chroma(pix, stride, alpha, beta, tc0);
++}
++
++static void h264_h_loop_filter_chroma_xenon(uint8_t *pix, ptrdiff_t stride, int alpha, int beta, int8_t *tc0)
++{
++    if (((uintptr_t)pix | (uintptr_t)stride) & 1)
++        xenon_h_chroma_c(pix, stride, alpha, beta, tc0);
++    else if (tc0[0] > 0 || tc0[1] > 0 || tc0[2] > 0 || tc0[3] > 0)
++        xv_h264_h_loop_filter_chroma(pix, stride, alpha, beta, tc0);
++}
++
++static void h264_v_loop_filter_chroma_intra_xenon(uint8_t *pix, ptrdiff_t stride, int alpha, int beta)
++{
++    if (((uintptr_t)pix | (uintptr_t)stride) & 7)
++        xenon_v_chroma_intra_c(pix, stride, alpha, beta);
++    else
++        xv_h264_v_loop_filter_chroma(pix, stride, alpha, beta, NULL);
++}
++
++static void h264_h_loop_filter_chroma_intra_xenon(uint8_t *pix, ptrdiff_t stride, int alpha, int beta)
++{
++    if (((uintptr_t)pix | (uintptr_t)stride) & 1)
++        xenon_h_chroma_intra_c(pix, stride, alpha, beta);
++    else
++        xv_h264_h_loop_filter_chroma(pix, stride, alpha, beta, NULL);
++}
+ #endif /* HAVE_ALTIVEC */
+ 
+ av_cold void ff_h264dsp_init_ppc(H264DSPContext *c, const int bit_depth,
+@@ -805,10 +846,17 @@ av_cold void ff_h264dsp_init_ppc(H264DSPContext *c, const int bit_depth,
          c->h264_v_loop_filter_luma= h264_v_loop_filter_luma_altivec;
          c->h264_h_loop_filter_luma= h264_h_loop_filter_luma_altivec;
  
@@ -708,6 +1048,16 @@ index 0650768..81c9599 100644
 -        c->biweight_h264_pixels_tab[0] = biweight_h264_pixels16_altivec;
 -        c->biweight_h264_pixels_tab[1] = biweight_h264_pixels8_altivec;
 +        /* Weighted prediction stays in C: it multiplies (vmladduhm), which Xenon's VMX128 (Xbox 360) lacks. */
++        if (chroma_format_idc <= 1 && !ff_xenon_chroma_c) {
++            xenon_v_chroma_c = c->h264_v_loop_filter_chroma;
++            xenon_h_chroma_c = c->h264_h_loop_filter_chroma;
++            xenon_v_chroma_intra_c = c->h264_v_loop_filter_chroma_intra;
++            xenon_h_chroma_intra_c = c->h264_h_loop_filter_chroma_intra;
++            c->h264_v_loop_filter_chroma = h264_v_loop_filter_chroma_xenon;
++            c->h264_h_loop_filter_chroma = h264_h_loop_filter_chroma_xenon;
++            c->h264_v_loop_filter_chroma_intra = h264_v_loop_filter_chroma_intra_xenon;
++            c->h264_h_loop_filter_chroma_intra = h264_h_loop_filter_chroma_intra_xenon;
++        }
      }
  #endif /* HAVE_ALTIVEC */
  }
