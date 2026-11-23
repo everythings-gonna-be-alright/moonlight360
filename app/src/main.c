@@ -44,7 +44,7 @@ enum {
     BUFFERS = 2,
     SWAP_INTERVAL = 1,
     BEGIN_TIMEOUT_MS = 5000,
-    LOW_LATENCY_WAIT_MS = 10,
+
     /* Held for MENU_HOLD_MS while streaming: opens the stream menu. */
     MENU_COMBO = INPUT_GAMEPAD_BACK | INPUT_GAMEPAD_START,
     MENU_HOLD_MS = 1000,
@@ -128,6 +128,69 @@ static void display_flipped(void)
     }
 }
 
+/* Low-latency display: when the next refresh comes, so the drawing loop can wait for a new frame only while there is
+ * still time to draw it before then. xsdk counts refreshes (XsdkPresentStats.vblanks) but doesn't time them, so they
+ * are timed here: xsdk_present_begin returns shortly after a refresh, the period is the long-run average, and the
+ * earliest-seen time of a count (counts times the period off) is when refreshes happen. Works for any TV mode.
+ * The time kept for drawing (reserve) grows by a millisecond whenever a frame missed the refresh it was drawn for, and
+ * shrinks very slowly while none do. */
+static struct {
+    bool started;
+    uint64_t t0_us;           /* first sample */
+    uint32_t v0;
+    double period_us;
+    double phase_us;          /* time of refresh v0, best estimate */
+    double reserve_us;
+    uint32_t target_vblank;   /* the refresh the frame queued last was drawn for; 0 if none */
+    uint32_t frames, misses;  /* frames drawn the low-latency way, and those that missed their refresh */
+} refresh;
+
+static void refresh_reset(void)
+{
+    memset(&refresh, 0, sizeof refresh);
+    refresh.period_us = 1000000.0 / 60.0;
+    refresh.reserve_us = 7000.0;
+}
+
+/* Right after xsdk_present_begin: learns the refresh timing; returns how long until the next refresh, in us. */
+static double refresh_sample(uint32_t *vblank_now)
+{
+    XsdkPresentStats st;
+    xsdk_present_stats(&st);
+    const uint64_t now = LiGetMicroseconds();
+    *vblank_now = st.vblanks;
+    if (!refresh.started) {
+        refresh.started = true;
+        refresh.t0_us = now;
+        refresh.v0 = st.vblanks;
+        refresh.phase_us = (double)now;
+    }
+    const uint32_t counted = st.vblanks - refresh.v0;
+    if (counted >= 120)   /* two seconds at 60 Hz before trusting the average */
+        refresh.period_us = (double)(now - refresh.t0_us) / counted;
+    /* This refresh began at or before now: the earliest such estimate is the closest. Let it drift up by 10 us a
+     * sample, so a too-early estimate (a period off at first) doesn't stick. */
+    const double began = (double)now - counted * refresh.period_us;
+    refresh.phase_us = began < refresh.phase_us ? began : refresh.phase_us + 10.0;
+    const double next = refresh.phase_us + (counted + 1) * refresh.period_us;
+    return next > (double)now ? next - (double)now : 0.0;
+}
+
+/* After xsdk_present_begin: was the frame queued last on the refresh it was drawn for? */
+static void refresh_check(uint32_t last_flip_vblank)
+{
+    if (!refresh.target_vblank)
+        return;
+    refresh.frames++;
+    if (last_flip_vblank > refresh.target_vblank) {
+        refresh.misses++;
+        refresh.reserve_us = refresh.reserve_us + 1000.0 < 14000.0 ? refresh.reserve_us + 1000.0 : 14000.0;
+    } else {
+        refresh.reserve_us = refresh.reserve_us - 2.0 > 3000.0 ? refresh.reserve_us - 2.0 : 3000.0;
+    }
+    refresh.target_vblank = 0;
+}
+
 /* The stats panel's first two lines, refreshed once a second: the stream, and where its latency goes. */
 static void stats_lines(char *out, size_t size, char *latency_out, size_t latency_size, uint32_t shown_frames)
 {
@@ -177,6 +240,10 @@ static void stats_lines(char *out, size_t size, char *latency_out, size_t latenc
                    v.fast_decode ? "  fast decode" : "", net.rtt_ms, net.rtt_var_ms, net.loss_pct,
                    (unsigned)net.lost_frames);
             printf("[I] stats: %s\n", latency);
+            if (refresh.frames)
+                printf("[I] stats: low-latency display: refresh %.3f ms, drawing reserve %.1f ms, %u of %u frames "
+                       "missed their refresh\n", refresh.period_us / 1000.0, refresh.reserve_us / 1000.0,
+                       (unsigned)refresh.misses, (unsigned)refresh.frames);
             diag_log("streaming");
             netfix_log_datagrams();
         }
@@ -449,6 +516,10 @@ int main(void)
         if (streaming && !was_streaming) {   /* a new stream: no display latency yet */
             queued_decoded_us = 0;
             display.avg_ms = -1.0f;
+            refresh_reset();
+            printf("[I] stream settings: %dx%d@%d %d kbps, fast decode %d, GPU decoding %d, low-latency display %d, "
+                   "stats %d\n", config.width, config.height, config.fps, config.bitrate_kbps, config.fast_decode,
+                   config.gpu_decode, config.low_latency, config.show_stats);
         }
         was_streaming = streaming;
 
@@ -460,15 +531,21 @@ int main(void)
         if (streaming)
             display_flipped();   /* the frame queued last is on screen now */
         if (late_take) {
-            /* Room for drawing before the next refresh, 16.7 ms after this one: the stream and overlay take the GPU
-             * a few ms. */
-            video_wait_frame(LOW_LATENCY_WAIT_MS);
+            XsdkPresentStats st;
+            xsdk_present_stats(&st);
+            refresh_check(st.last_flip_vblank);
+            uint32_t vblank;
+            const double until_refresh_us = refresh_sample(&vblank);
+            const double wait_us = until_refresh_us - refresh.reserve_us;
+            if (wait_us > 0)
+                video_wait_frame((uint32_t)wait_us);
             uint64_t decoded_us;
             AVFrame *frame = video_take_frame(&decoded_us);
             if (frame) {
                 render_set_frame(frame);
                 new_frame_us = decoded_us;
                 shown_frames++;
+                refresh.target_vblank = vblank + 1;
             }
         }
         gpudec_service();   /* GPU decoding's work for the decode thread, before this frame's drawing */

@@ -470,11 +470,11 @@ static int submit(PDECODE_UNIT unit)
     return DR_OK;
 }
 
-bool video_wait_frame(int timeout_ms)
+bool video_wait_frame(uint32_t timeout_us)
 {
     struct timespec deadline;
     clock_gettime(CLOCK_REALTIME, &deadline);
-    deadline.tv_nsec += (long)timeout_ms * 1000000L;
+    deadline.tv_nsec += (long)timeout_us * 1000L;
     deadline.tv_sec += deadline.tv_nsec / 1000000000L;
     deadline.tv_nsec %= 1000000000L;
     pthread_mutex_lock(&lock);

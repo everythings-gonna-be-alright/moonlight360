@@ -20,8 +20,8 @@ void video_set_decode_priority(int priority);
 /* The newest decoded frame not yet taken, or NULL; the caller frees it with av_frame_free. decoded_us (if not NULL)
  * gets when it was decoded, on LiGetMicroseconds' clock. */
 struct AVFrame *video_take_frame(uint64_t *decoded_us);
-/* Waits up to timeout_ms for a decoded frame to be waiting; whether one is. */
-bool video_wait_frame(int timeout_ms);
+/* Waits up to timeout_us for a decoded frame to be waiting; whether one is. */
+bool video_wait_frame(uint32_t timeout_us);
 
 typedef struct {
     uint32_t decoded;      /* frames decoded since the stream started */
