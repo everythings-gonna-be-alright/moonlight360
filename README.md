@@ -1,6 +1,6 @@
-# Moonlight 360
+# 🌙 Moonlight 360
 
-**Stream your PC games to an Xbox 360.** Yes, the 2005 one.
+**Stream your PC games to an Xbox 360.** 🎮 Yes, the 2005 one.
 
 An unofficial port of [Moonlight](https://moonlight-stream.org) to the Xbox 360. It works with
 [Sunshine](https://github.com/LizardByte/Sunshine) and its forks (Apollo, Vibeshine). It needs an **RGH/JTAG
@@ -12,17 +12,17 @@ Microsoft XDK involved.
 | ![Main menu](docs/screenshots/play.png) | ![Video settings](docs/screenshots/video.png) |
 | ![Pairing](docs/screenshots/pairing.png) | ![Stats overlay](docs/screenshots/stats.png) |
 
-## Features
+## ✨ Features
 
 - Pairing, the app list, and launching, resuming and quitting games on the PC.
 - H.264 video at 720p, 1600x900 or 1080p30; Opus stereo audio; controllers 1–4 with rumble.
 - A menu made for a controller and a TV, and a stats overlay with per-thread CPU load, GPU load and temperatures.
-  Now you can watch your console sweat in real time.
-- Experimental GPU decoding (see [below](#gpu-decoding-beta)).
+  Now you can watch your console sweat in real time. 🥵
+- Experimental GPU decoding (see [below](#-gpu-decoding-beta)).
 
 Not supported: HEVC, AV1 and HDR. The console is older than all three.
 
-## Running a release
+## 🚀 Running a release
 
 You need:
 - an RGH/JTAG Xbox 360 with a homebrew dashboard (Aurora, FreeStyle Dash or XeXMenu);
@@ -44,20 +44,20 @@ You need:
 Settings are saved to `moonlight.ini` next to the `.xex`; you can also copy the example `moonlight.ini` from the
 release and edit `host=` there. If something goes wrong, `moonlight360.log` in the same folder says why.
 
-## Recommended setup
+## 👍 Recommended setup
 
-- **Connect the console by Ethernet.** Over Wi-Fi, the console can stop receiving network traffic in the middle of
+- 🔌 **Connect the console by Ethernet.** Over Wi-Fi, the console can stop receiving network traffic in the middle of
   a stream, and only a reboot brings it back. We don't know exactly why. In our tests, fewer and larger packets
   helped, so the app asks for 20 ms audio packets instead of 5 ms and only offers 1392- and 1024-byte video packets.
   We can't promise that's a fix. Ethernet never had the problem.
-- **Codec: H.264 with CAVLC entropy coding.** H.264 is the only codec the 360 can decode. In Sunshine's encoder
+- 🎞️ **Codec: H.264 with CAVLC entropy coding.** H.264 is the only codec the 360 can decode. In Sunshine's encoder
   settings, set the H.264 coder to **CAVLC** instead of CABAC. CAVLC takes about 40% less time to decode, and at
   1080p that's the difference between smooth and stuttering.
-- **Resolution and bitrate:** 720p at 8–10 Mbit/s is the safe choice. For 1080p30 at up to 25 Mbit/s you need
+- 📺 **Resolution and bitrate:** 720p at 8–10 Mbit/s is the safe choice. For 1080p30 at up to 25 Mbit/s you need
   Ethernet, CAVLC and *Fast decode* on.
-- **Desktop stuck at 30 fps?** Desktop capture only sends a frame when the screen changes. A game will run at 60.
+- 🐢 **Desktop stuck at 30 fps?** Desktop capture only sends a frame when the screen changes. A game will run at 60.
 
-## Performance
+## ⚡ Performance
 
 1080p30 clips at about 22 Mbit/s, decoded on the console. Milliseconds per frame (30 fps needs 33 or less):
 
@@ -71,7 +71,7 @@ release and edit `host=` there. If something goes wrong, `moonlight360.log` in t
 Each frame is checked against FFmpeg on a PC. Xenon lacks AltiVec's vector integer multiplies, but the compiler
 emits them anyway, so `patches/ffmpeg-xenon-vmx128.patch` replaces them and the build fails if any are left.
 
-## GPU decoding (beta)
+## 🧪 GPU decoding (beta)
 
 The 360 has no hardware video decoder, so the hybrid decoder splits the work:
 1. The CPU parses the stream.
@@ -81,7 +81,7 @@ The 360 has no hardware video decoder, so the hybrid decoder splits the work:
 The output is bit-exact with FFmpeg, but it's **not faster yet**: about 33 ms a frame against 19 ms for the CPU
 alone. If it fails during a stream, the app switches back to the CPU decoder.
 
-## Building
+## 🛠️ Building
 
 Everything builds in Docker, on Linux or macOS.
 
@@ -97,7 +97,7 @@ run scripts/build-app.sh      # -> build/app/dist/moonlight360.xex
 
 The patches in `patches/` are applied by the build.
 
-## Developer tools (`dev/`)
+## 🧰 Developer tools (`dev/`)
 
 None of these are needed to build or use the app.
 
@@ -112,7 +112,7 @@ None of these are needed to build or use the app.
 
 Build scripts for these are in `dev/scripts/`.
 
-## Credits and license
+## 🙏 Credits and license
 
 Built on [moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c),
 [moonlight-tv](https://github.com/mariotaku/moonlight-tv)'s libgamestream, [xsdk](https://github.com/xenosworks/xsdk),
