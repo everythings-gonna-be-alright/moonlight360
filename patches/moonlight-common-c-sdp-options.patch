@@ -1,0 +1,42 @@
+diff --git a/src/SdpGenerator.c b/src/SdpGenerator.c
+index 22467c0..13edba0 100644
+--- a/src/SdpGenerator.c
++++ b/src/SdpGenerator.c
+@@ -1,6 +1,9 @@
+ #include "Limelight-internal.h"
+ #include <inttypes.h>
+ 
++// See getAttributesList(): 0 keeps the duration chosen there.
++int LiAudioPacketDurationOverrideMs = 0;
++
+ #define MAX_OPTION_NAME_LEN 128
+ 
+ #define MAX_SDP_HEADER_LEN 128
+@@ -397,7 +400,13 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
+     // Even though IPv6 hardware should be much less likely to have this issue, we can't tell
+     // if our address is a NAT64 synthesized IPv6 address or true end-to-end IPv6. If it's the
+     // former, it may have the same problem as other IPv4 traffic.
++#ifndef LC_NO_QOS_TAGGING
+     if (StreamConfig.streamingRemotely == STREAM_CFG_LOCAL) {
++#else
++    // LC_NO_QOS_TAGGING: never ask the host to QoS-tag our traffic. With qWave tagging, Windows can add an 802.1p
++    // priority tag to every video/audio frame, which some clients' network hardware (the Xbox 360's) can't take.
++    if (false) {
++#endif
+         err |= addAttributeString(&optionHead, "x-nv-vqos[0].qosTrafficType", "5");
+         err |= addAttributeString(&optionHead, "x-nv-aqos.qosTrafficType", "4");
+     }
+@@ -519,6 +528,13 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
+             }
+         }
+ 
++        // A client may force the duration (LiAudioPacketDurationOverrideMs, 0 for none): longer packets are
++        // fewer and larger, which some clients' network hardware needs (the Xbox 360's Wi-Fi stops receiving
++        // under the default's ~300 tiny packets a second).
++        if (LiAudioPacketDurationOverrideMs > 0) {
++            AudioPacketDuration = LiAudioPacketDurationOverrideMs;
++        }
++
+         snprintf(payloadStr, sizeof(payloadStr), "%d", AudioPacketDuration);
+         err |= addAttributeString(&optionHead, "x-nv-aqos.packetDuration", payloadStr);
+     }

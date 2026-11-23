@@ -1,0 +1,14 @@
+/* Keeps the log in memory while a stream runs.
+ *
+ * The log file is on USB storage and each line is a synchronous write (xsdk src/log.c). The console's Wi-Fi adapter
+ * is a USB device too. Writing log lines while stream traffic arrives is the one thing every network death had in
+ * common (2026-11-22): so during a session lines go to RAM, and reach the file once the session is over. */
+#pragma once
+#include <stdbool.h>
+
+/* false: lines always go straight to the file, as before (for A/B tests). Default true. */
+void logbuf_set_enabled(bool enabled);
+/* From now on lines are kept in memory. */
+void logbuf_begin(void);
+/* Writes what was kept to the file; lines go straight to the file again. */
+void logbuf_end(void);

@@ -1,0 +1,21 @@
+[submodule "third_party/xsdk"]
+	path = third_party/xsdk
+	url = https://github.com/xenosworks/xsdk.git
+[submodule "third_party/ffmpeg"]
+	path = third_party/ffmpeg
+	url = https://github.com/FFmpeg/FFmpeg.git
+[submodule "third_party/moonlight-tv"]
+	path = third_party/moonlight-tv
+	url = https://github.com/mariotaku/moonlight-tv.git
+[submodule "third_party/mbedtls-xenon"]
+	path = third_party/mbedtls-xenon
+	url = https://github.com/xenosworks/mbedtls-xenon.git
+[submodule "third_party/curl-xenon"]
+	path = third_party/curl-xenon
+	url = https://github.com/xenosworks/curl-xenon.git
+[submodule "third_party/expat"]
+	path = third_party/expat
+	url = https://github.com/libexpat/libexpat.git
+[submodule "third_party/opus"]
+	path = third_party/opus
+	url = https://github.com/xiph/opus.git

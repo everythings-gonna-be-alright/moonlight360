@@ -1,0 +1,34 @@
+diff --git a/src/PlatformCrypto.c b/src/PlatformCrypto.c
+index 817d9bb..0da6879 100644
+--- a/src/PlatformCrypto.c
++++ b/src/PlatformCrypto.c
+@@ -68,6 +68,14 @@ bool PltEncryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
+             return false;
+         }
+ 
++#if defined(MBEDTLS_CIPHER_MODE_WITH_PADDING) && defined(MBEDTLS_CIPHER_PADDING_PKCS7)
++        // mbedTLS 3 no longer sets a default padding mode; CBC needs PKCS#7 or finish() fails
++        if (cipherMode == MBEDTLS_MODE_CBC &&
++            mbedtls_cipher_set_padding_mode(&ctx->ctx, MBEDTLS_PADDING_PKCS7) != 0) {
++            return false;
++        }
++#endif
++
+         ctx->initialized = true;
+     }
+ 
+@@ -268,6 +276,14 @@ bool PltDecryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
+             return false;
+         }
+ 
++#if defined(MBEDTLS_CIPHER_MODE_WITH_PADDING) && defined(MBEDTLS_CIPHER_PADDING_PKCS7)
++        // mbedTLS 3 no longer sets a default padding mode; CBC needs PKCS#7 or finish() fails
++        if (cipherMode == MBEDTLS_MODE_CBC &&
++            mbedtls_cipher_set_padding_mode(&ctx->ctx, MBEDTLS_PADDING_PKCS7) != 0) {
++            return false;
++        }
++#endif
++
+         ctx->initialized = true;
+     }
+ 

@@ -1,0 +1,876 @@
+diff --git a/libavcodec/Makefile b/libavcodec/Makefile
+index 9d1c1fc..e33ec7f 100644
+--- a/libavcodec/Makefile
++++ b/libavcodec/Makefile
+@@ -409,7 +409,7 @@ OBJS-$(CONFIG_H263_ENCODER)            += mpeg4video.o  \
+                                           h263.o ituh263enc.o h263data.o
+ OBJS-$(CONFIG_H263_V4L2M2M_DECODER)    += v4l2_m2m_dec.o
+ OBJS-$(CONFIG_H263_V4L2M2M_ENCODER)    += v4l2_m2m_enc.o
+-OBJS-$(CONFIG_H264_DECODER)            += h264dec.o h264_cabac.o h264_cavlc.o \
++OBJS-$(CONFIG_H264_DECODER)            += h264dec.o h264_cabac.o h264_cavlc.o h264_xenon.o \
+                                           h264_direct.o h264_loopfilter.o  \
+                                           h264_mb.o h264_picture.o \
+                                           h264_refs.o \
+diff --git a/libavcodec/h264_mb.c b/libavcodec/h264_mb.c
+index 2db0670..a312e8a 100644
+--- a/libavcodec/h264_mb.c
++++ b/libavcodec/h264_mb.c
+@@ -787,6 +787,9 @@ static av_always_inline void hl_decode_mb_idct_luma(const H264Context *h, H264Sl
+ 
+ #define BITS   8
+ #define SIMPLE 1
++/* Set: inter macroblocks get no motion compensation (decbench times what the GPU would take over). */
++int ff_h264_skip_mc;
++
+ #include "h264_mb_template.c"
+ 
+ #undef  BITS
+@@ -797,7 +800,19 @@ static av_always_inline void hl_decode_mb_idct_luma(const H264Context *h, H264Sl
+ #define SIMPLE 0
+ #include "h264_mb_template.c"
+ 
++/* Xbox 360 hybrid decoding: when set, each parsed macroblock goes to this hook instead of being reconstructed on the
++ * CPU (moonlight-xbox360: the GPU rebuilds the picture; decbench times parsing alone with a hook doing nothing). */
++void (*ff_h264_mb_hook)(const void *h, void *sl);
++
+ void ff_h264_hl_decode_mb(const H264Context *h, H264SliceContext *sl)
++{
++    if (ff_h264_mb_hook)
++        ff_h264_mb_hook(h, sl);
++    else
++        ff_h264_hl_decode_mb_cpu(h, sl);
++}
++
++void ff_h264_hl_decode_mb_cpu(const H264Context *h, H264SliceContext *sl)
+ {
+     const int mb_xy   = sl->mb_xy;
+     const int mb_type = h->cur_pic.mb_type[mb_xy];
+diff --git a/libavcodec/h264_mb_template.c b/libavcodec/h264_mb_template.c
+index d5ea26a..d4543f0 100644
+--- a/libavcodec/h264_mb_template.c
++++ b/libavcodec/h264_mb_template.c
+@@ -176,7 +176,7 @@ static av_noinline void FUNC(hl_decode_mb)(const H264Context *h, H264SliceContex
+                               h->h264chroma.avg_h264_chroma_pixels_tab,
+                               h->h264dsp.weight_h264_pixels_tab,
+                               h->h264dsp.biweight_h264_pixels_tab);
+-            } else {
++            } else if (!ff_h264_skip_mc && !sl->xenon_skip_mc) {
+                 FUNC(hl_motion_420)(h, sl, dest_y, dest_cb, dest_cr,
+                               h->h264qpel.put_h264_qpel_pixels_tab,
+                               h->h264chroma.put_h264_chroma_pixels_tab,
+diff --git a/libavcodec/h264_xenon.c b/libavcodec/h264_xenon.c
+new file mode 100644
+index 0000000..13e2f2d
+--- /dev/null
++++ b/libavcodec/h264_xenon.c
+@@ -0,0 +1,521 @@
++/*
++ * The CPU half of moonlight-xbox360's hybrid H.264 decoder (Xbox 360). See h264_xenon.h.
++ * moonlight-xbox360 patch: patches/ffmpeg-xenon-vmx128.patch.
++ */
++#include <stdatomic.h>
++#include <string.h>
++
++#include "libavutil/mem.h"
++
++#include "h264dec.h"
++#include "h264_xenon.h"
++
++enum {
++    MODE_RESIDUAL = 1,   /* the GPU predicted it; the residual goes on top */
++    MODE_FULL = 2,       /* rebuilt here whole: intra, or motion the GPU can't do */
++    MAX_CONTEXTS = 64,
++};
++
++typedef struct Record {
++    uint16_t mb_x, mb_y;
++    uint8_t mode;
++    uint8_t has_luma_dc;
++    uint8_t is_complex;
++    uint8_t list_count;
++    uint8_t has_motion;              /* mv, ref and sub_mb_type hold the inter macroblock's caches */
++    int32_t qscale, chroma_qp[2], cbp, chroma_pred_mode, intra16x16_pred_mode;
++    uint32_t topleft, top, topright, left;
++    uint64_t blocks;                 /* 4x4 coefficient blocks that follow, by index 0..47 */
++    const uint8_t *pcm;
++    int8_t intra4x4[5 * 8];
++    uint8_t nnz[15 * 8];
++    int16_t mv[2][5 * 8][2];         /* MODE_FULL inter only */
++    int8_t ref[2][5 * 8];
++    uint16_t sub_mb_type[4];
++} Record;
++
++typedef struct Arena {
++    uint8_t *data;
++    size_t size, used;
++    int records;
++} Arena;
++
++static Arena arenas[MAX_CONTEXTS];
++static const H264Context *decoder;
++static uint32_t *grid;
++static int grid_pitch, grid_rows;
++static atomic_int gpu_blocks;        /* macroblocks the GPU predicts this frame */
++static atomic_int failed;
++static uint8_t *frame_data[3];
++/* The picture the GPU predicts from: its luma plane set once a frame by whichever slice gets there first (a
++ * compare-and-swap, so another slice never sees it half-set), the chroma planes with it. */
++static _Atomic(uint8_t *) reference_luma;
++static uint8_t *reference_chroma[2];
++/* Residuals (xenon_hybrid_set_residual): int16 samples, and a byte a macroblock saying whether it has one. */
++static int16_t *residual[3];
++static int residual_pitch[2];   /* luma, chroma: in samples */
++static uint8_t *residual_flags;
++static int flags_pitch;
++/* The GPU's tiled layout for them (xenon_hybrid_set_residual_layout); NULL: rows residual_pitch apart. */
++static const uint32_t *res_offsets[3];
++static uint32_t res_texels[3], res_band[3];
++
++static void hybrid_mb(const void *hv, void *slv);
++
++/* Debugging: each macroblock's path this frame (0 GPU alone, 1 GPU + residual, 2 CPU) and type. */
++static uint8_t debug_mode[256 * 256];
++static uint32_t debug_type[256 * 256];
++
++int xenon_hybrid_debug(int mb_x, int mb_y, uint32_t *mb_type)
++{
++    const int i = mb_y * 256 + mb_x;
++    *mb_type = debug_type[i];
++    return debug_mode[i];
++}
++
++void xenon_hybrid_set_grid(uint32_t *mv_grid, int pitch_blocks, int rows_blocks)
++{
++    grid = mv_grid;
++    grid_pitch = pitch_blocks;
++    grid_rows = rows_blocks;
++}
++
++void xenon_hybrid_set_residual(int16_t *luma, int luma_pitch, int16_t *cb, int16_t *cr, int chroma_pitch,
++                               uint8_t *flags, int flags_pitch_bytes)
++{
++    residual[0] = luma;
++    residual[1] = cb;
++    residual[2] = cr;
++    residual_pitch[0] = luma_pitch;
++    residual_pitch[1] = chroma_pitch;
++    residual_flags = flags;
++    flags_pitch = flags_pitch_bytes;
++}
++
++void xenon_hybrid_set_residual_layout(const uint32_t *const offsets[3], const uint32_t texels[3],
++                                      const uint32_t band[3])
++{
++    for (int p = 0; p < 3; p++) {
++        res_offsets[p] = offsets ? offsets[p] : NULL;
++        res_texels[p] = offsets ? texels[p] : 0;
++        res_band[p] = offsets ? band[p] : 0;
++    }
++}
++
++/* Where samples x .. x+3 of row y of plane p go (x a multiple of 4: one texel of the GPU's 16-bit RGBA). */
++static int16_t *residual_at(int p, int x, int y)
++{
++    if (res_offsets[p])
++        return (int16_t *)((uint8_t *)residual[p] + res_offsets[p][(y & 31) * res_texels[p] + (x >> 2)] +
++                           (uint32_t)(y >> 5) * res_band[p]);
++    return residual[p] + (size_t)y * residual_pitch[p ? 1 : 0] + x;
++}
++
++/* A size x size block of residual (rows src_stride apart) to plane p at (x, y), four samples at a time. */
++static void store_block(int p, int x, int y, const int16_t *src, int src_stride, int size)
++{
++    for (int r = 0; r < size; r++)
++        for (int c = 0; c < size; c += 4)
++            memcpy(residual_at(p, x + c, y + r), src + r * src_stride + c, 4 * sizeof(int16_t));
++}
++
++/* FFmpeg's inverse transforms (h264idct_template.c, ff_h264_idct_add and ff_h264_idct8_add) with the result kept as
++ * the residual rather than added to pixels: the GPU adds it to its prediction and clips, as those functions do. A
++ * DC-only block gives what ff_h264_idct_dc_add would. The coefficients are cleared after, as there. */
++static void idct4_residual(int16_t *block, int16_t *dst, int stride)
++{
++    block[0] += 1 << 5;
++    for (int i = 0; i < 4; i++) {
++        const unsigned z0 = block[i + 4 * 0] + (unsigned)block[i + 4 * 2];
++        const unsigned z1 = block[i + 4 * 0] - (unsigned)block[i + 4 * 2];
++        const unsigned z2 = (block[i + 4 * 1] >> 1) - (unsigned)block[i + 4 * 3];
++        const unsigned z3 = block[i + 4 * 1] + (unsigned)(block[i + 4 * 3] >> 1);
++        block[i + 4 * 0] = z0 + z3;
++        block[i + 4 * 1] = z1 + z2;
++        block[i + 4 * 2] = z1 - z2;
++        block[i + 4 * 3] = z0 - z3;
++    }
++    for (int i = 0; i < 4; i++) {
++        const unsigned z0 = block[0 + 4 * i] + (unsigned)block[2 + 4 * i];
++        const unsigned z1 = block[0 + 4 * i] - (unsigned)block[2 + 4 * i];
++        const unsigned z2 = (block[1 + 4 * i] >> 1) - (unsigned)block[3 + 4 * i];
++        const unsigned z3 = block[1 + 4 * i] + (unsigned)(block[3 + 4 * i] >> 1);
++        dst[i + 0 * stride] = (int16_t)((int)(z0 + z3) >> 6);
++        dst[i + 1 * stride] = (int16_t)((int)(z1 + z2) >> 6);
++        dst[i + 2 * stride] = (int16_t)((int)(z1 - z2) >> 6);
++        dst[i + 3 * stride] = (int16_t)((int)(z0 - z3) >> 6);
++    }
++    memset(block, 0, 16 * sizeof(int16_t));
++}
++
++static void idct8_residual(int16_t *block, int16_t *dst, int stride)
++{
++    block[0] += 32;
++    for (int i = 0; i < 8; i++) {
++        const unsigned a0 = block[i + 0 * 8] + (unsigned)block[i + 4 * 8];
++        const unsigned a2 = block[i + 0 * 8] - (unsigned)block[i + 4 * 8];
++        const unsigned a4 = (block[i + 2 * 8] >> 1) - (unsigned)block[i + 6 * 8];
++        const unsigned a6 = (block[i + 6 * 8] >> 1) + (unsigned)block[i + 2 * 8];
++        const unsigned b0 = a0 + a6, b2 = a2 + a4, b4 = a2 - a4, b6 = a0 - a6;
++        const int a1 = -block[i + 3 * 8] + (unsigned)block[i + 5 * 8] - block[i + 7 * 8] - (block[i + 7 * 8] >> 1);
++        const int a3 = block[i + 1 * 8] + (unsigned)block[i + 7 * 8] - block[i + 3 * 8] - (block[i + 3 * 8] >> 1);
++        const int a5 = -block[i + 1 * 8] + (unsigned)block[i + 7 * 8] + block[i + 5 * 8] + (block[i + 5 * 8] >> 1);
++        const int a7 = block[i + 3 * 8] + (unsigned)block[i + 5 * 8] + block[i + 1 * 8] + (block[i + 1 * 8] >> 1);
++        const int b1 = (a7 >> 2) + (unsigned)a1;
++        const int b3 = (unsigned)a3 + (a5 >> 2);
++        const int b5 = (a3 >> 2) - (unsigned)a5;
++        const int b7 = (unsigned)a7 - (a1 >> 2);
++        block[i + 0 * 8] = b0 + b7;
++        block[i + 7 * 8] = b0 - b7;
++        block[i + 1 * 8] = b2 + b5;
++        block[i + 6 * 8] = b2 - b5;
++        block[i + 2 * 8] = b4 + b3;
++        block[i + 5 * 8] = b4 - b3;
++        block[i + 3 * 8] = b6 + b1;
++        block[i + 4 * 8] = b6 - b1;
++    }
++    for (int i = 0; i < 8; i++) {
++        const unsigned a0 = block[0 + i * 8] + (unsigned)block[4 + i * 8];
++        const unsigned a2 = block[0 + i * 8] - (unsigned)block[4 + i * 8];
++        const unsigned a4 = (block[2 + i * 8] >> 1) - (unsigned)block[6 + i * 8];
++        const unsigned a6 = (block[6 + i * 8] >> 1) + (unsigned)block[2 + i * 8];
++        const unsigned b0 = a0 + a6, b2 = a2 + a4, b4 = a2 - a4, b6 = a0 - a6;
++        const int a1 = -(unsigned)block[3 + i * 8] + block[5 + i * 8] - block[7 + i * 8] - (block[7 + i * 8] >> 1);
++        const int a3 = (unsigned)block[1 + i * 8] + block[7 + i * 8] - block[3 + i * 8] - (block[3 + i * 8] >> 1);
++        const int a5 = -(unsigned)block[1 + i * 8] + block[7 + i * 8] + block[5 + i * 8] + (block[5 + i * 8] >> 1);
++        const int a7 = (unsigned)block[3 + i * 8] + block[5 + i * 8] + block[1 + i * 8] + (block[1 + i * 8] >> 1);
++        const unsigned b1 = (a7 >> 2) + (unsigned)a1;
++        const unsigned b3 = (unsigned)a3 + (a5 >> 2);
++        const unsigned b5 = (a3 >> 2) - (unsigned)a5;
++        const unsigned b7 = (unsigned)a7 - (a1 >> 2);
++        dst[i + 0 * stride] = (int16_t)((int)(b0 + b7) >> 6);
++        dst[i + 1 * stride] = (int16_t)((int)(b2 + b5) >> 6);
++        dst[i + 2 * stride] = (int16_t)((int)(b4 + b3) >> 6);
++        dst[i + 3 * stride] = (int16_t)((int)(b6 + b1) >> 6);
++        dst[i + 4 * stride] = (int16_t)((int)(b6 - b1) >> 6);
++        dst[i + 5 * stride] = (int16_t)((int)(b4 - b3) >> 6);
++        dst[i + 6 * stride] = (int16_t)((int)(b2 - b5) >> 6);
++        dst[i + 7 * stride] = (int16_t)((int)(b0 - b7) >> 6);
++    }
++    memset(block, 0, 64 * sizeof(int16_t));
++}
++
++/* An inter macroblock's residual, as hl_decode_mb's luma IDCTs (h264_idct_add16 / h264_idct8_add4) and chroma (the DC
++ * transforms, then h264_idct_add8) would add it, into the residual planes. */
++static void write_residual(const H264Context *h, H264SliceContext *sl, int mb_type)
++{
++    static const int16_t zeros[64];
++    int16_t tmp[64];
++    const uint8_t *nnz = sl->non_zero_count_cache;
++    const int mx = sl->mb_x * 16, my = sl->mb_y * 16;
++    if (IS_8x8DCT(mb_type)) {
++        for (int i = 0; i < 16; i += 4) {
++            const int x = mx + 8 * ((i >> 2) & 1), y = my + 8 * (i >> 3);
++            if (nnz[scan8[i]]) {
++                idct8_residual(sl->mb + i * 16, tmp, 8);
++                store_block(0, x, y, tmp, 8, 8);
++            } else {
++                store_block(0, x, y, zeros, 8, 8);
++            }
++        }
++    } else {
++        for (int i = 0; i < 16; i++) {
++            const int bx = (i & 1) | ((i >> 1) & 2), by = ((i >> 1) & 1) | ((i >> 2) & 2);
++            const int x = mx + 4 * bx, y = my + 4 * by;
++            if (nnz[scan8[i]]) {
++                idct4_residual(sl->mb + i * 16, tmp, 4);
++                store_block(0, x, y, tmp, 4, 4);
++            } else {
++                store_block(0, x, y, zeros, 4, 4);
++            }
++        }
++    }
++    for (int p = 0; p < 2; p++) {
++        const int cx = sl->mb_x * 8, cy = sl->mb_y * 8;
++        if (!(sl->cbp & 0x30)) {
++            store_block(1 + p, cx, cy, zeros, 8, 8);
++            continue;
++        }
++        if (nnz[scan8[CHROMA_DC_BLOCK_INDEX + p]])
++            h->h264dsp.h264_chroma_dc_dequant_idct(sl->mb + 16 * 16 * (1 + p),
++                                                   h->ps.pps->dequant4_coeff[4 + p][sl->chroma_qp[p]][0]);
++        for (int j = 0; j < 4; j++) {
++            const int i = 16 * (1 + p) + j;
++            const int x = cx + 4 * (j & 1), y = cy + 4 * (j >> 1);
++            if (nnz[scan8[i]] || sl->mb[i * 16]) {
++                idct4_residual(sl->mb + i * 16, tmp, 4);
++                store_block(1 + p, x, y, tmp, 4, 4);
++            } else {
++                store_block(1 + p, x, y, zeros, 4, 4);
++            }
++        }
++    }
++}
++
++void xenon_hybrid_enable(int on)
++{
++    ff_h264_mb_hook = on ? hybrid_mb : NULL;
++}
++
++void xenon_hybrid_begin_frame(void)
++{
++    for (int i = 0; i < MAX_CONTEXTS; i++) {
++        arenas[i].used = 0;
++        arenas[i].records = 0;
++    }
++    atomic_store(&gpu_blocks, 0);
++    atomic_store(&failed, 0);
++    atomic_store(&reference_luma, NULL);
++    decoder = NULL;
++}
++
++int xenon_hybrid_reference(uint8_t *planes[3])
++{
++    planes[0] = atomic_load(&reference_luma);
++    planes[1] = reference_chroma[0];
++    planes[2] = reference_chroma[1];
++    return planes[0] != NULL;
++}
++
++int xenon_hybrid_gpu_needed(void)
++{
++    return atomic_load(&gpu_blocks) > 0;
++}
++
++int xenon_hybrid_failed(void)
++{
++    return atomic_load(&failed);
++}
++
++int xenon_hybrid_contexts(void)
++{
++    int n = 0;
++    for (int i = 0; i < MAX_CONTEXTS; i++)
++        if (arenas[i].records)
++            n = i + 1;
++    return n;
++}
++
++static void *arena_take(Arena *a, size_t bytes)
++{
++    bytes = (bytes + 15) & ~(size_t)15;
++    if (a->used + bytes > a->size) {
++        size_t size = a->size ? a->size * 2 : 1 << 20;
++        while (size < a->used + bytes)
++            size *= 2;
++        uint8_t *data = av_realloc(a->data, size);
++        if (!data)
++            return NULL;
++        a->data = data;
++        a->size = size;
++    }
++    void *p = a->data + a->used;
++    a->used += bytes;
++    return p;
++}
++
++static size_t record_bytes(int nblocks, int has_luma_dc)
++{
++    return (sizeof(Record) + (size_t)(nblocks + has_luma_dc) * 16 * sizeof(int16_t) + 15) & ~(size_t)15;
++}
++
++/* The 4x4 coefficient blocks holding data: luma by the non-zero counts, whole 8x8 blocks with the 8x8 transform
++ * (CAVLC interleaves its four 4x4 scans over all 64 coefficients), and chroma all eight when the CBP has any. */
++static uint64_t coefficient_blocks(const H264SliceContext *sl, int mb_type)
++{
++    uint64_t blocks = 0;
++    if (IS_8x8DCT(mb_type)) {
++        for (int i = 0; i < 4; i++)
++            if (sl->non_zero_count_cache[scan8[4 * i]] || sl->non_zero_count_cache[scan8[4 * i + 1]] ||
++                sl->non_zero_count_cache[scan8[4 * i + 2]] || sl->non_zero_count_cache[scan8[4 * i + 3]])
++                blocks |= 0xFull << (4 * i);
++    } else {
++        for (int i = 0; i < 16; i++)
++            if (sl->non_zero_count_cache[scan8[i]])
++                blocks |= 1ull << i;
++    }
++    if (sl->cbp & 0x30)
++        blocks |= 0xFull << 16 | 0xFull << 32;
++    return blocks;
++}
++
++/* Whether the GPU predicts this inter macroblock: list 0 alone, reference 0, no weights, vectors the grid holds. */
++static int gpu_can_predict(const H264Context *h, const H264SliceContext *sl, int mb_type)
++{
++    if (sl->slice_type_nos != AV_PICTURE_TYPE_P || sl->list_count != 1 || sl->pwt.use_weight ||
++        sl->pwt.use_weight_chroma || h->picture_structure != PICT_FRAME || USES_LIST(mb_type, 1))
++        return 0;
++    for (int i = 0; i < 16; i++) {
++        const int16_t *mv = sl->mv_cache[0][scan8[i]];
++        if (sl->ref_cache[0][scan8[i]] != 0 || mv[0] < -XENON_MV_LIMIT || mv[0] >= XENON_MV_LIMIT ||
++            mv[1] < -XENON_MV_LIMIT || mv[1] >= XENON_MV_LIMIT)
++            return 0;
++    }
++    return 1;
++}
++
++static void hybrid_mb(const void *hv, void *slv)
++{
++    const H264Context *h = hv;
++    H264SliceContext *sl = slv;
++    const int mb_type = h->cur_pic.mb_type[sl->mb_xy];
++    const int index = (int)(sl - h->slice_ctx);
++    if (!decoder) {
++        decoder = h;
++        for (int p = 0; p < 3; p++)
++            frame_data[p] = h->cur_pic.f->data[p];
++    }
++    if (index < 0 || index >= MAX_CONTEXTS || !grid || sl->mb_x * 4 + 3 >= grid_pitch ||
++        sl->mb_y * 4 + 3 >= grid_rows || CHROMA444(h) || CHROMA422(h) || h->pixel_shift || FRAME_MBAFF(h)) {
++        atomic_store(&failed, 1);
++        ff_h264_hl_decode_mb_cpu(h, sl);
++        return;
++    }
++
++    int mode = MODE_FULL;
++    if (!IS_INTRA(mb_type) && gpu_can_predict(h, sl, mb_type)) {
++        /* Every slice's list 0 entry 0 must be the one picture the GPU predicts from. */
++        uint8_t *const *ref = sl->ref_list[0][0].data;
++        uint8_t *expected = NULL;
++        if (atomic_compare_exchange_strong(&reference_luma, &expected, ref[0])) {
++            reference_chroma[0] = ref[1];
++            reference_chroma[1] = ref[2];
++        } else if (expected != ref[0]) {
++            atomic_store(&failed, 3);   /* slices predicting from different pictures */
++        }
++        uint32_t *corner = grid + (size_t)(sl->mb_y * 4) * grid_pitch + sl->mb_x * 4;
++        for (int i = 0; i < 16; i++) {
++            /* Block i of a macroblock: 8x8 quadrants in raster order, 4x4 blocks in raster order within each. */
++            const int bx = (i & 1) | ((i >> 1) & 2), by = ((i >> 1) & 1) | ((i >> 2) & 2);
++            const int16_t *mv = sl->mv_cache[0][scan8[i]];
++            corner[(size_t)by * grid_pitch + bx] = xenon_mv_encode(mv[0], mv[1]);
++        }
++        atomic_fetch_add(&gpu_blocks, 1);
++        mode = sl->cbp ? MODE_RESIDUAL : 0;
++        if (residual_flags) {
++            /* The residual goes to the GPU too: nothing to keep for the CPU. */
++            residual_flags[(size_t)sl->mb_y * flags_pitch + sl->mb_x] = mode ? 1 : 0;
++            if (mode)
++                write_residual(h, sl, mb_type);
++            mode = 0;
++        }
++    } else if (residual_flags) {
++        residual_flags[(size_t)sl->mb_y * flags_pitch + sl->mb_x] = 0;   /* rebuilt on the CPU after the GPU */
++    }
++    if (sl->mb_x < 256 && sl->mb_y < 256) {
++        debug_mode[sl->mb_y * 256 + sl->mb_x] = (uint8_t)mode;
++        debug_type[sl->mb_y * 256 + sl->mb_x] = (uint32_t)mb_type;
++    }
++    if (!mode)
++        return;   /* no residual: the GPU's prediction is the macroblock */
++
++    Arena *a = &arenas[index];
++    const uint64_t blocks = coefficient_blocks(sl, mb_type);
++    const int has_luma_dc = IS_INTRA16x16(mb_type) ? 1 : 0;
++    Record *r = arena_take(a, record_bytes(__builtin_popcountll(blocks), has_luma_dc));
++    if (!r) {
++        atomic_store(&failed, 2);   /* no memory for the record */
++        return;
++    }
++    r->mb_x = (uint16_t)sl->mb_x;
++    r->mb_y = (uint16_t)sl->mb_y;
++    r->mode = (uint8_t)mode;
++    r->has_luma_dc = (uint8_t)has_luma_dc;
++    r->is_complex = (uint8_t)sl->is_complex;
++    r->list_count = (uint8_t)sl->list_count;
++    r->qscale = sl->qscale;
++    r->chroma_qp[0] = sl->chroma_qp[0];
++    r->chroma_qp[1] = sl->chroma_qp[1];
++    r->cbp = sl->cbp;
++    r->chroma_pred_mode = sl->chroma_pred_mode;
++    r->intra16x16_pred_mode = sl->intra16x16_pred_mode;
++    r->topleft = sl->topleft_samples_available;
++    r->top = sl->top_samples_available;
++    r->topright = sl->topright_samples_available;
++    r->left = sl->left_samples_available;
++    r->blocks = blocks;
++    r->pcm = sl->intra_pcm_ptr;
++    memcpy(r->intra4x4, sl->intra4x4_pred_mode_cache, sizeof r->intra4x4);
++    memcpy(r->nnz, sl->non_zero_count_cache, sizeof r->nnz);
++    r->has_motion = mode == MODE_FULL && !IS_INTRA(mb_type);
++    if (r->has_motion) {
++        memcpy(r->mv, sl->mv_cache, sizeof r->mv);
++        memcpy(r->ref, sl->ref_cache, sizeof r->ref);
++        memcpy(r->sub_mb_type, sl->sub_mb_type, sizeof r->sub_mb_type);
++    }
++    int16_t *coefficients = (int16_t *)(r + 1);
++    for (int i = 0; i < 48; i++) {
++        if (!(blocks >> i & 1))
++            continue;
++        memcpy(coefficients, sl->mb + 16 * i, 16 * sizeof(int16_t));
++        memset(sl->mb + 16 * i, 0, 16 * sizeof(int16_t));   /* FFmpeg parses into a zeroed buffer */
++        coefficients += 16;
++    }
++    if (has_luma_dc) {
++        memcpy(coefficients, sl->mb_luma_dc[0], 16 * sizeof(int16_t));
++        memset(sl->mb_luma_dc[0], 0, 16 * sizeof(int16_t));
++    }
++    a->records++;
++}
++
++int xenon_hybrid_replay(int index)
++{
++    const H264Context *h = decoder;
++    if (!h || index < 0 || index >= MAX_CONTEXTS || !arenas[index].records)
++        return 0;
++    if (h->cur_pic.f->data[0] != frame_data[0])
++        return -1;   /* the decoder has moved on to another picture */
++    H264SliceContext *sl = &h->slice_ctx[index];
++    const int saved_deblock = sl->deblocking_filter;
++    sl->deblocking_filter = 0;
++    const Arena *a = &arenas[index];
++    size_t offset = 0;
++    for (int n = 0; n < a->records; n++) {
++        const Record *r = (const Record *)(a->data + offset);
++        offset += record_bytes(__builtin_popcountll(r->blocks), r->has_luma_dc);
++        sl->mb_x = r->mb_x;
++        sl->mb_y = r->mb_y;
++        sl->mb_xy = r->mb_x + r->mb_y * h->mb_stride;
++        sl->qscale = r->qscale;
++        sl->chroma_qp[0] = r->chroma_qp[0];
++        sl->chroma_qp[1] = r->chroma_qp[1];
++        sl->cbp = r->cbp;
++        sl->chroma_pred_mode = r->chroma_pred_mode;
++        sl->intra16x16_pred_mode = r->intra16x16_pred_mode;
++        sl->topleft_samples_available = r->topleft;
++        sl->top_samples_available = r->top;
++        sl->topright_samples_available = r->topright;
++        sl->left_samples_available = r->left;
++        sl->is_complex = r->is_complex;
++        sl->list_count = r->list_count;
++        sl->intra_pcm_ptr = r->pcm;
++        memcpy(sl->intra4x4_pred_mode_cache, r->intra4x4, sizeof r->intra4x4);
++        memcpy(sl->non_zero_count_cache, r->nnz, sizeof r->nnz);
++        /* Only what parsing left there: the caches also hold cells FFmpeg marks unavailable once per slice. */
++        if (r->has_motion) {
++            memcpy(sl->mv_cache, r->mv, sizeof r->mv);
++            memcpy(sl->ref_cache, r->ref, sizeof r->ref);
++            memcpy(sl->sub_mb_type, r->sub_mb_type, sizeof r->sub_mb_type);
++        }
++        const int16_t *coefficients = (const int16_t *)(r + 1);
++        for (int i = 0; i < 48; i++) {
++            if (!(r->blocks >> i & 1))
++                continue;
++            memcpy(sl->mb + 16 * i, coefficients, 16 * sizeof(int16_t));
++            coefficients += 16;
++        }
++        if (r->has_luma_dc)
++            memcpy(sl->mb_luma_dc[0], coefficients, 16 * sizeof(int16_t));
++        sl->xenon_skip_mc = r->mode == MODE_RESIDUAL;
++        ff_h264_hl_decode_mb_cpu(h, sl);
++        sl->xenon_skip_mc = 0;
++        /* Leave the buffers zeroed, as parsing expects them. */
++        for (int i = 0; i < 48; i++)
++            if (r->blocks >> i & 1)
++                memset(sl->mb + 16 * i, 0, 16 * sizeof(int16_t));
++        if (r->has_luma_dc)
++            memset(sl->mb_luma_dc[0], 0, 16 * sizeof(int16_t));
++    }
++    sl->deblocking_filter = saved_deblock;
++    return a->records;
++}
+diff --git a/libavcodec/h264_xenon.h b/libavcodec/h264_xenon.h
+new file mode 100644
+index 0000000..755b1bf
+--- /dev/null
++++ b/libavcodec/h264_xenon.h
+@@ -0,0 +1,54 @@
++/*
++ * moonlight-xbox360's hybrid H.264 decoder, CPU half. With it on, the slice threads parse every macroblock but don't
++ * rebuild it: inter ones the GPU can predict (P, list 0, reference 0, no weights) get their motion vectors written
++ * to a grid, and whatever still needs the CPU is kept. After avcodec_send_packet the GPU draws the inter prediction
++ * into the picture, then xenon_hybrid_replay runs FFmpeg's own rebuild over what was kept, one slice context each.
++ */
++#ifndef AVCODEC_H264_XENON_H
++#define AVCODEC_H264_XENON_H
++
++#include <stdint.h>
++
++/* The grid: a 32-bit float per 4x4 luma block, row after row, pitch_blocks apart, holding the motion vector in quarter
++ * samples as (mvx + 2048) * 4096 + (mvy + 2048), exact in a float. A GPU reads it as an R32F texture. Blocks of
++ * macroblocks the GPU doesn't predict are left as they were; vectors past +-2048 go to the CPU. */
++#define XENON_MV_LIMIT 2048
++static inline uint32_t xenon_mv_encode(int mvx, int mvy)
++{
++    union { float f; uint32_t u; } v = { .f = (float)((mvx + XENON_MV_LIMIT) * 4096 + (mvy + XENON_MV_LIMIT)) };
++    return v.u;
++}
++static inline void xenon_mv_decode(uint32_t word, int *mvx, int *mvy)
++{
++    union { uint32_t u; float f; } v = { .u = word };
++    const int packed = (int)v.f;
++    *mvx = packed / 4096 - XENON_MV_LIMIT;
++    *mvy = packed % 4096 - XENON_MV_LIMIT;
++}
++void xenon_hybrid_set_grid(uint32_t *mv_grid, int pitch_blocks, int rows_blocks);
++/* With these set, a GPU-predicted macroblock's residual goes to the GPU as well instead of being kept for the replay:
++ * int16 samples, luma at luma_pitch samples a row, chroma at chroma_pitch, and a byte a macroblock in flags (1 has a
++ * residual, 0 none: its samples aren't written then). NULL flags turns it off. */
++void xenon_hybrid_set_residual(int16_t *luma, int luma_pitch, int16_t *cb, int16_t *cr, int chroma_pitch,
++                               uint8_t *flags, int flags_pitch_bytes);
++/* The residual planes in the GPU's tiled layout (the texture cache's): samples x .. x+3 of row y of plane p (x a
++ * multiple of 4, one 16-bit RGBA texel) are offsets[p][(y % 32) * texels[p] + x / 4] + (y / 32) * band[p] bytes from
++ * the plane's start. NULL goes back to rows. */
++void xenon_hybrid_set_residual_layout(const uint32_t *const offsets[3], const uint32_t texels[3],
++                                      const uint32_t band[3]);
++void xenon_hybrid_enable(int on);
++/* Before each avcodec_send_packet. */
++void xenon_hybrid_begin_frame(void);
++/* After it: whether any macroblock waits for the GPU's prediction; whether anything went wrong. */
++int xenon_hybrid_gpu_needed(void);
++int xenon_hybrid_failed(void);
++/* The picture the GPU predicts from (list 0, entry 0), its three planes; 0 if no macroblock needs it. */
++int xenon_hybrid_reference(uint8_t *planes[3]);
++/* Slice contexts with macroblocks to replay: 0 .. n-1, each replayed once, on any thread, distinct ones in parallel.
++ * Returns the macroblocks replayed, or -1 if the decoder has moved to another picture. */
++int xenon_hybrid_contexts(void);
++int xenon_hybrid_replay(int index);
++/* Debugging: a macroblock's path this frame (0 GPU alone, 1 GPU and residual, 2 CPU) and its mb_type. */
++int xenon_hybrid_debug(int mb_x, int mb_y, uint32_t *mb_type);
++
++#endif
+diff --git a/libavcodec/h264dec.h b/libavcodec/h264dec.h
+index ccd7583..a9ee435 100644
+--- a/libavcodec/h264dec.h
++++ b/libavcodec/h264dec.h
+@@ -307,6 +307,7 @@ typedef struct H264SliceContext {
+ 
+     ///< as a DCT coefficient is int32_t in high depth, we need to reserve twice the space.
+     DECLARE_ALIGNED(16, int16_t, mb)[16 * 48 * 2];
++    int xenon_skip_mc;   ///< moonlight-xbox360 hybrid: the GPU already predicted this macroblock
+     DECLARE_ALIGNED(16, int16_t, mb_luma_dc)[3][16 * 2];
+     ///< as mb is addressed by scantable[i] and scantable is uint8_t we can either
+     ///< check that i is not too large or ensure that there is some unused stuff after mb
+@@ -608,6 +609,9 @@ int ff_h264_decode_ref_pic_marking(H264SliceContext *sl, GetBitContext *gb,
+                                    const H2645NAL *nal, void *logctx);
+ 
+ void ff_h264_hl_decode_mb(const H264Context *h, H264SliceContext *sl);
++/* moonlight-xbox360 hybrid (h264_xenon.c): the rebuild itself, and the hook ff_h264_hl_decode_mb hands off to. */
++void ff_h264_hl_decode_mb_cpu(const H264Context *h, H264SliceContext *sl);
++extern void (*ff_h264_mb_hook)(const void *h, void *sl);
+ void ff_h264_decode_init_vlc(void);
+ 
+ /**
+diff --git a/libavcodec/ppc/fdctdsp.c b/libavcodec/ppc/fdctdsp.c
+index ae3c1b1..904515c 100644
+--- a/libavcodec/ppc/fdctdsp.c
++++ b/libavcodec/ppc/fdctdsp.c
+@@ -465,6 +465,9 @@ void ff_fdct_altivec(int16_t *block)
+ av_cold void ff_fdctdsp_init_ppc(FDCTDSPContext *c, AVCodecContext *avctx,
+                                  unsigned high_bit_depth)
+ {
++    /* Xenon's VMX128 (Xbox 360) lacks the vector integer multiplies this code uses: keep the C versions. */
++    if (1)
++        return;
+ #if HAVE_ALTIVEC
+     if (!PPC_ALTIVEC(av_get_cpu_flags()))
+         return;
+diff --git a/libavcodec/ppc/h264chroma_init.c b/libavcodec/ppc/h264chroma_init.c
+index bd0d213..32a4790 100644
+--- a/libavcodec/ppc/h264chroma_init.c
++++ b/libavcodec/ppc/h264chroma_init.c
+@@ -51,6 +51,9 @@
+ 
+ av_cold void ff_h264chroma_init_ppc(H264ChromaContext *c, int bit_depth)
+ {
++    /* Xenon's VMX128 (Xbox 360) lacks the vector integer multiplies this code uses: keep the C versions. */
++    if (1)
++        return;
+ #if HAVE_ALTIVEC
+     const int high_bit_depth = bit_depth > 8;
+ 
+diff --git a/libavcodec/ppc/h264dsp.c b/libavcodec/ppc/h264dsp.c
+index 0650768..81c9599 100644
+--- a/libavcodec/ppc/h264dsp.c
++++ b/libavcodec/ppc/h264dsp.c
+@@ -805,10 +805,7 @@ av_cold void ff_h264dsp_init_ppc(H264DSPContext *c, const int bit_depth,
+         c->h264_v_loop_filter_luma= h264_v_loop_filter_luma_altivec;
+         c->h264_h_loop_filter_luma= h264_h_loop_filter_luma_altivec;
+ 
+-        c->weight_h264_pixels_tab[0]   = weight_h264_pixels16_altivec;
+-        c->weight_h264_pixels_tab[1]   = weight_h264_pixels8_altivec;
+-        c->biweight_h264_pixels_tab[0] = biweight_h264_pixels16_altivec;
+-        c->biweight_h264_pixels_tab[1] = biweight_h264_pixels8_altivec;
++        /* Weighted prediction stays in C: it multiplies (vmladduhm), which Xenon's VMX128 (Xbox 360) lacks. */
+     }
+ #endif /* HAVE_ALTIVEC */
+ }
+diff --git a/libavcodec/ppc/h264qpel.c b/libavcodec/ppc/h264qpel.c
+index fe896c8..c891ddc 100644
+--- a/libavcodec/ppc/h264qpel.c
++++ b/libavcodec/ppc/h264qpel.c
+@@ -33,6 +33,35 @@
+ 
+ #if HAVE_ALTIVEC
+ 
++/* Xenon's VMX128 (Xbox 360) has no vector integer multiplies (vmladduhm, vmule*, vmulo*): the lowpass filters only
++ * multiply by 20, 5 and 1, which shifts and adds do exactly. */
++static av_always_inline vec_s16 xenon_mul20_add(vec_s16 x, vec_s16 y)
++{
++    return vec_add(vec_add(vec_sl(x, vec_splat_u16(4)), vec_sl(x, vec_splat_u16(2))), y);
++}
++static av_always_inline vec_s16 xenon_mul5(vec_s16 x)
++{
++    return vec_add(vec_sl(x, vec_splat_u16(2)), x);
++}
++/* The even and odd 16-bit lanes, sign-extended to 32 bits (big-endian: even lanes are each word's high half). */
++static av_always_inline vec_s32 xenon_even_s32(vec_s16 x)
++{
++    return vec_sra((vec_s32)x, vec_sl(vec_splat_u32(1), vec_splat_u32(4)));
++}
++static av_always_inline vec_s32 xenon_odd_s32(vec_s16 x)
++{
++    const vec_u32 sixteen = vec_sl(vec_splat_u32(1), vec_splat_u32(4));
++    return vec_sra(vec_sl((vec_s32)x, sixteen), sixteen);
++}
++static av_always_inline vec_s32 xenon_mul20_s32(vec_s32 x)
++{
++    return vec_add(vec_sl(x, vec_splat_u32(4)), vec_sl(x, vec_splat_u32(2)));
++}
++static av_always_inline vec_s32 xenon_mul5_s32(vec_s32 x)
++{
++    return vec_add(vec_sl(x, vec_splat_u32(2)), x);
++}
++
+ #define PUT_OP_U8_ALTIVEC(d, s, dst) d = s
+ #define AVG_OP_U8_ALTIVEC(d, s, dst) d = vec_avg(dst, s)
+ 
+diff --git a/libavcodec/ppc/h264qpel_template.c b/libavcodec/ppc/h264qpel_template.c
+index 304604c..facbbcc 100644
+--- a/libavcodec/ppc/h264qpel_template.c
++++ b/libavcodec/ppc/h264qpel_template.c
+@@ -161,11 +161,11 @@ static void PREFIX_h264_qpel16_h_lowpass_altivec(uint8_t *dst,
+         sum3A = vec_adds(srcM2A, srcP3A);
+         sum3B = vec_adds(srcM2B, srcP3B);
+ 
+-        pp1A = vec_mladd(sum1A, v20ss, v16ss);
+-        pp1B = vec_mladd(sum1B, v20ss, v16ss);
++        pp1A = xenon_mul20_add(sum1A, v16ss);
++        pp1B = xenon_mul20_add(sum1B, v16ss);
+ 
+-        pp2A = vec_mladd(sum2A, v5ss, zero_s16v);
+-        pp2B = vec_mladd(sum2B, v5ss, zero_s16v);
++        pp2A = xenon_mul5(sum2A);
++        pp2B = xenon_mul5(sum2B);
+ 
+         pp3A = vec_add(sum3A, pp1A);
+         pp3B = vec_add(sum3B, pp1B);
+@@ -264,11 +264,11 @@ static void PREFIX_h264_qpel16_v_lowpass_altivec(uint8_t *dst,
+         srcP2ssA = srcP3ssA;
+         srcP2ssB = srcP3ssB;
+ 
+-        pp1A = vec_mladd(sum1A, v20ss, v16ss);
+-        pp1B = vec_mladd(sum1B, v20ss, v16ss);
++        pp1A = xenon_mul20_add(sum1A, v16ss);
++        pp1B = xenon_mul20_add(sum1B, v16ss);
+ 
+-        pp2A = vec_mladd(sum2A, v5ss, zero_s16v);
+-        pp2B = vec_mladd(sum2B, v5ss, zero_s16v);
++        pp2A = xenon_mul5(sum2A);
++        pp2B = xenon_mul5(sum2B);
+ 
+         pp3A = vec_add(sum3A, pp1A);
+         pp3B = vec_add(sum3B, pp1B);
+@@ -370,11 +370,11 @@ static void PREFIX_h264_qpel16_hv_lowpass_altivec(uint8_t *dst, int16_t *tmp,
+         sum3A = vec_adds(srcM2A, srcP3A);
+         sum3B = vec_adds(srcM2B, srcP3B);
+ 
+-        pp1A = vec_mladd(sum1A, v20ss, sum3A);
+-        pp1B = vec_mladd(sum1B, v20ss, sum3B);
++        pp1A = xenon_mul20_add(sum1A, sum3A);
++        pp1B = xenon_mul20_add(sum1B, sum3B);
+ 
+-        pp2A = vec_mladd(sum2A, v5ss, zero_s16v);
+-        pp2B = vec_mladd(sum2B, v5ss, zero_s16v);
++        pp2A = xenon_mul5(sum2A);
++        pp2B = xenon_mul5(sum2B);
+ 
+         psumA = vec_sub(pp1A, pp2A);
+         psumB = vec_sub(pp1B, pp2B);
+@@ -426,18 +426,18 @@ static void PREFIX_h264_qpel16_hv_lowpass_altivec(uint8_t *dst, int16_t *tmp,
+         tmpP2ssA = tmpP3ssA;
+         tmpP2ssB = tmpP3ssB;
+ 
+-        pp1Ae = vec_mule(sum1A, v20ss);
+-        pp1Ao = vec_mulo(sum1A, v20ss);
+-        pp1Be = vec_mule(sum1B, v20ss);
+-        pp1Bo = vec_mulo(sum1B, v20ss);
++        pp1Ae = xenon_mul20_s32(xenon_even_s32(sum1A));
++        pp1Ao = xenon_mul20_s32(xenon_odd_s32(sum1A));
++        pp1Be = xenon_mul20_s32(xenon_even_s32(sum1B));
++        pp1Bo = xenon_mul20_s32(xenon_odd_s32(sum1B));
+ 
+-        pp2Ae = vec_mule(sum2A, v5ss);
+-        pp2Ao = vec_mulo(sum2A, v5ss);
+-        pp2Be = vec_mule(sum2B, v5ss);
+-        pp2Bo = vec_mulo(sum2B, v5ss);
++        pp2Ae = xenon_mul5_s32(xenon_even_s32(sum2A));
++        pp2Ao = xenon_mul5_s32(xenon_odd_s32(sum2A));
++        pp2Be = xenon_mul5_s32(xenon_even_s32(sum2B));
++        pp2Bo = xenon_mul5_s32(xenon_odd_s32(sum2B));
+ 
+-        pp3Ao = vec_mulo(sum3A, v1ss);
+-        pp3Bo = vec_mulo(sum3B, v1ss);
++        pp3Ao = xenon_odd_s32(sum3A);
++        pp3Bo = xenon_odd_s32(sum3B);
+ #if !HAVE_BIGENDIAN
+         sum3A = (vec_s16)vec_perm(sum3A, sum3A,vcswapi2s(0,1,2,3));
+         sum3B = (vec_s16)vec_perm(sum3B, sum3B,vcswapi2s(0,1,2,3));
+diff --git a/libavcodec/ppc/hpeldsp_altivec.c b/libavcodec/ppc/hpeldsp_altivec.c
+index 4bf6b28..7c5cfb3 100644
+--- a/libavcodec/ppc/hpeldsp_altivec.c
++++ b/libavcodec/ppc/hpeldsp_altivec.c
+@@ -367,6 +367,9 @@ static void avg_pixels8_xy2_altivec(uint8_t *block, const uint8_t *pixels, ptrdi
+ 
+ av_cold void ff_hpeldsp_init_ppc(HpelDSPContext *c, int flags)
+ {
++    /* Xenon's VMX128 (Xbox 360) lacks the vector integer multiplies this code uses: keep the C versions. */
++    if (1)
++        return;
+ #if HAVE_ALTIVEC
+     if (!PPC_ALTIVEC(av_get_cpu_flags()))
+         return;
+diff --git a/libavcodec/ppc/idctdsp.c b/libavcodec/ppc/idctdsp.c
+index a7acbc5..14c6f65 100644
+--- a/libavcodec/ppc/idctdsp.c
++++ b/libavcodec/ppc/idctdsp.c
+@@ -256,6 +256,9 @@ static void idct_add_altivec(uint8_t *dest, ptrdiff_t stride, int16_t *blk)
+ av_cold void ff_idctdsp_init_ppc(IDCTDSPContext *c, AVCodecContext *avctx,
+                                  unsigned high_bit_depth)
+ {
++    /* Xenon's VMX128 (Xbox 360) lacks the vector integer multiplies this code uses: keep the C versions. */
++    if (1)
++        return;
+ #if HAVE_ALTIVEC
+     if (!PPC_ALTIVEC(av_get_cpu_flags()))
+         return;
+diff --git a/libavcodec/ppc/me_cmp.c b/libavcodec/ppc/me_cmp.c
+index 90f2152..ffa2547 100644
+--- a/libavcodec/ppc/me_cmp.c
++++ b/libavcodec/ppc/me_cmp.c
+@@ -725,6 +725,9 @@ static int hadamard8_diff16_altivec(MpegEncContext *s, const uint8_t *dst,
+ 
+ av_cold void ff_me_cmp_init_ppc(MECmpContext *c, AVCodecContext *avctx)
+ {
++    /* Xenon's VMX128 (Xbox 360) lacks the vector integer multiplies this code uses: keep the C versions. */
++    if (1)
++        return;
+ #if HAVE_ALTIVEC
+     if (!PPC_ALTIVEC(av_get_cpu_flags()))
+         return;
