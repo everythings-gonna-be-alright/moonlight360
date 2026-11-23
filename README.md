@@ -10,14 +10,17 @@ Microsoft XDK involved.
 | | |
 |---|---|
 | ![Main menu](docs/screenshots/play.png) | ![Video settings](docs/screenshots/video.png) |
-| ![Pairing](docs/screenshots/pairing.png) | ![Stats overlay](docs/screenshots/stats.png) |
+| ![Pairing](docs/screenshots/pairing.png) | ![Stats HUD](docs/screenshots/stats.png) |
 
 ## ✨ Features
 
 - Pairing, the app list, and launching, resuming and quitting games on the PC.
 - H.264 video at 720p, 1600x900 or 1080p30; Opus stereo audio; controllers 1–4 with rumble.
-- A menu made for a controller and a TV, and a stats overlay with per-thread CPU load, GPU load and temperatures.
-  Now you can watch your console sweat in real time. 🥵
+- A menu made for a controller and a TV.
+- A stats HUD, compact or detailed: frame rate, latency split into PC, network, decode and display, ping, packet
+  loss, CPU and GPU load and temperatures, with live graphs. Now you can watch your console sweat in real time. 🥵
+  Switch it from the stream menu (Back + Start).
+- Low-latency display (Video tab) and controllers read 1000 times a second, for less lag.
 - Experimental GPU decoding (see [below](#-gpu-decoding-beta)).
 
 Not supported: HEVC, AV1 and HDR. The console is older than all three.
