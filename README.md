@@ -22,15 +22,27 @@ Microsoft XDK involved.
 
 Not supported: HEVC, AV1 and HDR. The console is older than all three.
 
-## Quick start
+## Running a release
 
-1. Download `moonlight360.xex` from [Releases](https://github.com/everythings-gonna-be-alright/moonlight360/releases)
-   and copy it to its own folder on the console.
-2. Launch it from Aurora, and set *Host PC* to your PC's IP address.
-3. Pick *Start streaming*. The first time, enter the PIN it shows on Sunshine's PIN page.
-4. Hold **Back + Start** while streaming for the stream menu.
+You need:
+- an RGH/JTAG Xbox 360 with a homebrew dashboard (Aurora, FreeStyle Dash or XeXMenu);
+- a PC with [Sunshine](https://github.com/LizardByte/Sunshine) (or Apollo or Vibeshine) installed and running;
+- both on the same network.
 
-Settings go to `moonlight.ini` and the log to `moonlight360.log`, both next to the `.xex`.
+1. **Download** `moonlight360.xex` from
+   [Releases](https://github.com/everythings-gonna-be-alright/moonlight360/releases).
+2. **Copy it to the console,** into a folder of its own, for example `Hdd1:\Apps\Moonlight360\`. Use the dashboard's
+   FTP server (Aurora has one built in) or a FAT32 USB stick.
+3. **Launch it.** In Aurora, add the folder to the content scan paths and the app shows up with your other
+   homebrew. Or open the folder in a file manager (Aurora's, or XeXMenu) and start `moonlight360.xex`.
+4. **Point it at your PC.** On the *Play* tab, select *Host PC* and type the PC's IP address.
+5. **Pair, once.** Pick *Start streaming*. The console shows a 4-digit PIN: open Sunshine's web UI on the PC
+   (`https://localhost:47990`), go to the *PIN* page and enter it.
+6. **Play.** Hold **Back + Start** for a second while streaming to open the stream menu: resume, go back to the
+   main menu (the game keeps running) or quit the game.
+
+Settings are saved to `moonlight.ini` next to the `.xex`; you can also copy the example `moonlight.ini` from the
+release and edit `host=` there. If something goes wrong, `moonlight360.log` in the same folder says why.
 
 ## Recommended setup
 
