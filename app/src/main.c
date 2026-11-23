@@ -88,6 +88,19 @@ static bool any_pressed(const InputState *in, uint16_t buttons)
 }
 
 /* Stats line, refreshed once a second. */
+/* Lost frames and arrivals from video.c, the ping from moonlight-common-c (its ENet estimate). */
+static void net_stats(NetStats *net)
+{
+    video_get_net_stats(net);
+    uint32_t rtt, variance;
+    if (LiGetEstimatedRttInfo(&rtt, &variance)) {
+        net->rtt_ms = (int)rtt;
+        net->rtt_var_ms = (int)variance;
+    } else {
+        net->rtt_ms = net->rtt_var_ms = -1;
+    }
+}
+
 static void stats_line(char *out, size_t size, uint32_t shown_frames)
 {
     static uint64_t last_ms;
@@ -112,7 +125,10 @@ static void stats_line(char *out, size_t size, uint32_t shown_frames)
         /* Every 5 s into the log too, so a freeze shows up there. */
         static unsigned logged;
         if (++logged % 5 == 0) {
-            printf("[I] stats: %s\n", line);
+            NetStats net;
+            net_stats(&net);
+            printf("[I] stats: %s  ping %d ms (+-%d)  loss %.1f%% (%u frames)\n", line, net.rtt_ms, net.rtt_var_ms,
+                   net.loss_pct, (unsigned)net.lost_frames);
             diag_log("streaming");
             netfix_log_datagrams();
         }
@@ -394,7 +410,9 @@ int main(void)
             if (config.show_stats) {
                 PerfReadings perf;
                 perf_get(&perf);
-                ui_draw_stats(line, &perf);
+                static NetStats net;   /* 90 arrivals: off the stack */
+                net_stats(&net);
+                ui_draw_stats(line, &perf, &net);
             }
             overlay_draw(width, height, config.app);
         } else if (in_session) {

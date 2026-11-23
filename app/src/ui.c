@@ -104,12 +104,72 @@ static uint32_t temperature_colour(float c)
     return c >= 85.0f ? THEME_ERROR : c >= 72.0f ? THEME_WARN : THEME_TEXT_2;
 }
 
-void ui_draw_stats(const char *line, const PerfReadings *perf)
+static uint32_t ping_colour(int ms)
+{
+    return ms >= 40 ? THEME_ERROR : ms >= 15 ? THEME_WARN : THEME_TEXT_2;
+}
+
+static uint32_t loss_colour(float pct)
+{
+    return pct >= 1.0f ? THEME_ERROR : pct > 0.0f ? THEME_WARN : THEME_TEXT_2;
+}
+
+/* Ping and loss on the left; on the right a bar per arriving frame, as tall as the time since the one before (up to
+ * three frame times), with a line at one frame time. Green on time, orange more than two frames late, red where
+ * frames went missing before it. */
+enum { NET_GRAPH_H = 40, NET_BAR_W = 3, NET_BAR_STEP = 4, NET_LABEL_GAP = 20 };
+static const char net_label_widest[] = "Ping 999 ms \xC2\xB1" "99   Loss 100.0% (99999)";
+
+static int32_t net_row_width(void)
+{
+    return gfx_text_width(net_label_widest, 1) + NET_LABEL_GAP + NET_HISTORY * NET_BAR_STEP;
+}
+
+static void draw_net_row(int32_t x, int32_t y, const NetStats *net)
+{
+    char text[96];
+    int32_t tx = x;
+    if (net->rtt_ms >= 0)
+        snprintf(text, sizeof text, "Ping %d ms \xC2\xB1%d", net->rtt_ms, net->rtt_var_ms);
+    else
+        snprintf(text, sizeof text, "Ping --");
+    gfx_text(tx, y, 1, net->rtt_ms >= 0 ? ping_colour(net->rtt_ms) : THEME_TEXT_3, text);
+    tx += gfx_text_width(text, 1) + 24;
+    snprintf(text, sizeof text, "Loss %.1f%% (%u)", net->loss_pct, (unsigned)net->lost_frames);
+    gfx_text(tx, y, 1, loss_colour(net->loss_pct), text);
+    gfx_text(x, y + 20, 1, THEME_TEXT_3, "Frame arrival");
+
+    const float gx = (float)(x + gfx_text_width(net_label_widest, 1) + NET_LABEL_GAP), gy = (float)y;
+    const float gw = (float)(NET_HISTORY * NET_BAR_STEP), gh = (float)NET_GRAPH_H;
+    gfx_rect(gx - 4.0f, gy - 2.0f, gw + 6.0f, gh + 4.0f, 4.0f, 0x60000000);
+    if (net->budget_ms <= 0.0f)
+        return;
+    const float top_ms = 3.0f * net->budget_ms;
+    const int start = NET_HISTORY - net->count;   /* newest at the right edge */
+    for (int i = 0; i < net->count; i++) {
+        const float ms = net->interval_ms[i];
+        float bh = gh * (ms < top_ms ? ms : top_ms) / top_ms;
+        if (bh < 1.0f)
+            bh = 1.0f;
+        uint32_t colour = 0xB04CC38A;   /* THEME_GOOD, a little see-through */
+        if (net->lost_before[i]) {
+            colour = THEME_ERROR;
+            bh = gh;
+        } else if (ms > 2.0f * net->budget_ms) {
+            colour = THEME_WARN;
+        }
+        gfx_rect(gx + (float)((start + i) * NET_BAR_STEP), gy + gh - bh, NET_BAR_W, bh, 0.0f, colour);
+    }
+    gfx_rect(gx - 2.0f, gy + gh - gh / 3.0f, gw + 2.0f, 1.0f, 0.0f, 0x80FFFFFF);   /* one frame time */
+}
+
+void ui_draw_stats(const char *line, const PerfReadings *perf, const NetStats *net)
 {
     enum { X = 16, Y = 12, PAD = 14, BAR_W = 14, BAR_H = 26, BAR_GAP = 5 };
-    const int32_t line_w = gfx_text_width(line, 1);
-    const int32_t w = (line_w > 440 ? line_w : 440) + 2 * PAD;
-    const int32_t h = 2 * PAD + 20 + 12 + BAR_H + 10 + 20;
+    const int32_t line_w = gfx_text_width(line, 1), net_w = net_row_width();
+    const int32_t content_w = line_w > net_w ? line_w : net_w;
+    const int32_t w = (content_w > 440 ? content_w : 440) + 2 * PAD;
+    const int32_t h = 2 * PAD + 20 + 12 + BAR_H + 10 + 20 + 14 + NET_GRAPH_H;
     gfx_rect(X, Y, (float)w, (float)h, 12.0f, 0xC0080C14);
     int32_t x = X + PAD, y = Y + PAD;
     gfx_text(x, y, 1, THEME_TEXT, line);
@@ -160,6 +220,7 @@ void ui_draw_stats(const char *line, const PerfReadings *perf)
     } else {
         gfx_text(x, y, 1, THEME_TEXT_3, "Temperatures: no reading");
     }
+    draw_net_row(x, y + 20 + 14, net);
 }
 
 void ui_draw_temperatures(const PerfReadings *perf)

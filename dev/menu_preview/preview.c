@@ -347,7 +347,13 @@ int main(int argc, char **argv)
     gfx_frame_begin(W, H);
     PerfReadings perf;
     perf_get(&perf);
-    ui_draw_stats("decode 30 fps (9.5 ms)  shown 29 fps  dropped 0  errors 0  audio gaps 0  CABAC  fast decode", &perf);
+    static NetStats net = { .rtt_ms = 3, .rtt_var_ms = 1, .lost_frames = 2, .loss_pct = 1.7f, .budget_ms = 1000.0f / 30,
+                            .count = NET_HISTORY };
+    for (int i = 0; i < NET_HISTORY; i++)
+        net.interval_ms[i] = 1000.0f / 30 + (float)((i * 37) % 11) - 5.0f;
+    net.interval_ms[52] = 81.0f;
+    net.lost_before[71] = true;
+    ui_draw_stats("decode 30 fps (9.5 ms)  shown 29 fps  dropped 0  errors 0  audio gaps 0  CABAC  fast decode", &perf, &net);
     overlay_draw(W, H, "Desktop");
     snprintf(path, sizeof path, "%s/9-stream-menu.png", dir);
     write_png(path);
@@ -355,7 +361,7 @@ int main(int argc, char **argv)
     clear();
     fake_game();
     gfx_frame_begin(W, H);
-    ui_draw_stats("decode 30 fps (9.5 ms)  shown 29 fps  dropped 0  errors 0  audio gaps 0  CABAC  fast decode", &perf);
+    ui_draw_stats("decode 30 fps (9.5 ms)  shown 29 fps  dropped 0  errors 0  audio gaps 0  CABAC  fast decode", &perf, &net);
     snprintf(path, sizeof path, "%s/10-stats.png", dir);
     write_png(path);
 

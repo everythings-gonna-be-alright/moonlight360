@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <Limelight.h>
 
+#include "netstats.h"
+
 struct AVFrame;
 
 extern DECODER_RENDERER_CALLBACKS video_callbacks;
@@ -30,6 +32,8 @@ typedef struct {
 } VideoStats;
 
 void video_get_stats(VideoStats *stats);
+/* Lost frames and the last frames' arrival times (the ping fields are left alone). */
+void video_get_net_stats(NetStats *net);
 
 /* Whether FFmpeg decoded the frame into GPU-readable memory as linear R8 planes (render.c then draws it in place). */
 bool video_frame_in_gpu_memory(const struct AVFrame *frame);

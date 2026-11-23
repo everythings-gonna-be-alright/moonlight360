@@ -105,6 +105,49 @@ static VideoStats stats;
 static uint64_t window_start_us, window_decode_us;
 static uint32_t window_frames;
 
+static uint64_t now_us(void);
+
+/* Arrivals, for the network graph: a ring of the last NET_HISTORY frames, under lock. Frame numbers count up by one
+ * from the host; a gap is frames moonlight-common-c dropped because packets went missing. */
+static struct {
+    float interval_ms[NET_HISTORY];
+    bool lost_before[NET_HISTORY];
+    int next, count;
+    int last_number;
+    uint64_t last_us;
+    uint32_t lost_total, window_lost, window_arrived;
+    uint64_t window_start_us;
+    float loss_pct, budget_ms;
+} net;
+
+/* Decode thread, for every frame that arrives (decoded or not). */
+static void record_arrival(const DECODE_UNIT *unit)
+{
+    const uint64_t now = now_us();
+    pthread_mutex_lock(&lock);
+    const int gap = net.last_number ? unit->frameNumber - net.last_number - 1 : 0;
+    const uint32_t lost = gap > 0 ? (uint32_t)gap : 0;
+    if (net.last_us) {
+        net.interval_ms[net.next] = (float)(now - net.last_us) / 1000.0f;
+        net.lost_before[net.next] = lost > 0;
+        net.next = (net.next + 1) % NET_HISTORY;
+        if (net.count < NET_HISTORY)
+            net.count++;
+    }
+    net.last_us = now;
+    net.last_number = unit->frameNumber;
+    net.lost_total += lost;
+    net.window_lost += lost;
+    net.window_arrived++;
+    if (now - net.window_start_us >= 1000000) {
+        const uint32_t all = net.window_lost + net.window_arrived;
+        net.loss_pct = all ? 100.0f * (float)net.window_lost / (float)all : 0.0f;
+        net.window_start_us = now;
+        net.window_lost = net.window_arrived = 0;
+    }
+    pthread_mutex_unlock(&lock);
+}
+
 static uint64_t now_us(void)
 {
     struct timespec ts;
@@ -268,6 +311,11 @@ static int setup(int video_format, int width, int height, int redraw_rate, void 
     window_start_us = now_us();
     window_decode_us = 0;
     window_frames = 0;
+    pthread_mutex_lock(&lock);
+    memset(&net, 0, sizeof net);
+    net.window_start_us = window_start_us;
+    net.budget_ms = redraw_rate > 0 ? 1000.0f / (float)redraw_rate : 0.0f;
+    pthread_mutex_unlock(&lock);
     moved_decode_thread = 0;
     printf("[I] video: H.264 %dx%d@%d, %d decode threads at priority %d, %d slices asked, deblocking %s%s\n",
            width, height, redraw_rate, DECODE_THREADS, decode_priority, SLICES_PER_FRAME, fast_decode ? "skipped (fast decode)" : "on",
@@ -300,6 +348,7 @@ static int submit(PDECODE_UNIT unit)
                (unsigned)st);
         moved_decode_thread = 1;
     }
+    record_arrival(unit);
     if (!decode_enabled) {
         /* Network test: count what arrives, decode nothing. */
         pthread_mutex_lock(&lock);
@@ -397,6 +446,21 @@ void video_get_stats(VideoStats *out)
 {
     pthread_mutex_lock(&lock);
     *out = stats;
+    pthread_mutex_unlock(&lock);
+}
+
+void video_get_net_stats(NetStats *out)
+{
+    pthread_mutex_lock(&lock);
+    out->lost_frames = net.lost_total;
+    out->loss_pct = net.loss_pct;
+    out->budget_ms = net.budget_ms;
+    out->count = net.count;
+    const int first = (net.next - net.count + NET_HISTORY) % NET_HISTORY;
+    for (int i = 0; i < net.count; i++) {
+        out->interval_ms[i] = net.interval_ms[(first + i) % NET_HISTORY];
+        out->lost_before[i] = net.lost_before[(first + i) % NET_HISTORY];
+    }
     pthread_mutex_unlock(&lock);
 }
 
