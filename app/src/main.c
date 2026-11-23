@@ -104,7 +104,9 @@ static void net_stats(NetStats *net)
 
 /* Display latency: from a frame's decoding to its flip, which is when xsdk_present_begin next returns (with two front
  * buffers it waits for the frame queued last to show). On LiGetMicroseconds' clock, like video.c's times. */
-static uint64_t queued_decoded_us;   /* the frame queued last, if it was a new one; 0 if not */
+static FrameTimes queued;   /* the frame queued last, if it was a new one; decoded_us 0 if not */
+static HudHistory history;  /* the detailed HUD's graphs */
+static int history_rtt_ms;  /* the ping, refreshed once a second, for the latency graph's network part */
 static struct {
     uint64_t start_us;
     double sum_ms;
@@ -115,10 +117,20 @@ static struct {
 static void display_flipped(void)
 {
     const uint64_t now = LiGetMicroseconds();
-    if (queued_decoded_us) {
-        display.sum_ms += (double)(now - queued_decoded_us) / 1000.0;
+    if (queued.decoded_us) {
+        const float display_ms = (float)(now - queued.decoded_us) / 1000.0f;
+        display.sum_ms += display_ms;
         display.frames++;
-        queued_decoded_us = 0;
+        /* This frame's latency, part by part, for the graph. */
+        float *parts = history.latency[history.latency_next];
+        parts[0] = queued.host_ms > 0 ? queued.host_ms : 0.0f;
+        parts[1] = (history_rtt_ms > 0 ? history_rtt_ms / 2.0f : 0.0f) + queued.receive_ms;
+        parts[2] = queued.decode_ms;
+        parts[3] = display_ms;
+        history.latency_next = (history.latency_next + 1) % HUD_HISTORY;
+        if (history.latency_count < HUD_HISTORY)
+            history.latency_count++;
+        queued.decoded_us = 0;
     }
     if (now - display.start_us >= 1000000) {
         display.avg_ms = display.frames ? (float)(display.sum_ms / display.frames) : display.avg_ms;
@@ -235,6 +247,7 @@ static void stats_update(HudStats *hud, uint32_t shown_frames, const Config *con
     video_get_stats(&v);
     audio_get_stats(&a);
     net_stats(&net);
+    history_rtt_ms = net.rtt_ms;
     if (v.decoded < last_decoded || shown_frames < last_shown) {   /* a new stream: counters started over */
         last_decoded = last_shown = last_dropped = last_errors = last_gaps = 0;
         memset(trouble, 0, sizeof trouble);
@@ -544,24 +557,26 @@ int main(void)
          * two refreshes after it was decoded. With low latency it is taken after the wait, waiting a little more for
          * one if none is ready, so a frame decoded in that time shows on the next refresh. */
         const bool late_take = streaming && config.low_latency && config.draw;
-        uint64_t new_frame_us = 0, taken_us = 0;
+        FrameTimes new_frame = { 0 };
+        uint64_t taken_us = 0;
         if (streaming && !late_take) {
-            uint64_t decoded_us;
-            AVFrame *frame = video_take_frame(&decoded_us);
+            FrameTimes times;
+            AVFrame *frame = video_take_frame(&times);
             if (frame && !config.draw) {
                 av_frame_free(&frame);   /* test switch: decoded, never copied to the GPU */
                 shown_frames++;
             } else if (frame) {
                 render_set_frame(frame);
-                new_frame_us = decoded_us;
+                new_frame = times;
                 shown_frames++;
             }
         } else if (!streaming && was_streaming) {
             render_clear();
         }
         if (streaming && !was_streaming) {   /* a new stream: no display latency yet */
-            queued_decoded_us = 0;
+            queued.decoded_us = 0;
             display.avg_ms = -1.0f;
+            memset(&history, 0, sizeof history);
             refresh_reset();
             printf("[I] stream settings: %dx%d@%d %d kbps, fast decode %d, GPU decoding %d, low-latency display %d, "
                    "stats %d\n", config.width, config.height, config.fps, config.bitrate_kbps, config.fast_decode,
@@ -585,11 +600,11 @@ int main(void)
             const double wait_us = until_refresh_us - refresh.reserve_us;
             if (wait_us > 0)
                 video_wait_frame((uint32_t)wait_us);
-            uint64_t decoded_us;
-            AVFrame *frame = video_take_frame(&decoded_us);
+            FrameTimes times;
+            AVFrame *frame = video_take_frame(&times);
             if (frame) {
                 render_set_frame(frame);
-                new_frame_us = decoded_us;
+                new_frame = times;
                 taken_us = LiGetMicroseconds();
                 shown_frames++;
                 refresh.target_vblank = vblank + 1;
@@ -605,12 +620,26 @@ int main(void)
                                NULL, true);
             static HudStats hud;
             stats_update(&hud, shown_frames, &config);
+            /* Load into the graph's ring whenever a new sample came (twice a second), HUD shown or not. */
+            PerfReadings perf;
+            perf_get(&perf);
+            static uint32_t last_sample;
+            if (perf.sample != last_sample && perf.cpu_average >= 0) {
+                last_sample = perf.sample;
+                int peak = 0;
+                for (int hw = 0; hw < 6; hw++)
+                    peak = perf.cpu[hw] > peak ? perf.cpu[hw] : peak;
+                history.cpu[history.load_next] = (uint8_t)perf.cpu_average;
+                history.cpu_peak[history.load_next] = (uint8_t)peak;
+                history.gpu[history.load_next] = (uint8_t)(perf.gpu < 0 ? 0 : perf.gpu);
+                history.load_next = (history.load_next + 1) % HUD_HISTORY;
+                if (history.load_count < HUD_HISTORY)
+                    history.load_count++;
+            }
             if (config.stats_mode != STATS_OFF) {
-                PerfReadings perf;
-                perf_get(&perf);
                 static NetStats net;   /* 90 arrivals: off the stack */
                 net_stats(&net);
-                ui_draw_stats(config.stats_mode, &hud, &perf, &net);
+                ui_draw_stats(config.stats_mode, &hud, &perf, &net, &history);
             }
             overlay_draw(width, height, config.app, config.stats_mode);
         } else if (in_session) {
@@ -621,7 +650,7 @@ int main(void)
         xsdk_gpu_resolve(address, width, height, CLEAR_ARGB);
         perf_gpu_frame_end();
         xsdk_present_end();
-        queued_decoded_us = new_frame_us;
+        queued = new_frame;
         if (taken_us) {
             const uint64_t took = LiGetMicroseconds() - taken_us;
             draw_time.sum_us += took;

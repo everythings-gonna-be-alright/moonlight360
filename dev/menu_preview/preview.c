@@ -353,7 +353,19 @@ int main(int argc, char **argv)
         net.interval_ms[i] = 1000.0f / 30 + (float)((i * 37) % 7) - 3.0f;
     const HudStats hud = { .ready = true, .fps = 30, .target_fps = 30, .width = 1280, .height = 720, .cabac = 0,
                            .fast_decode = true, .host_ms = 2, .net_ms = 5, .decode_ms = 18, .display_ms = 14 };
-    ui_draw_stats(STATS_COMPACT, &hud, &perf, &net);
+    static HudHistory hist = { .latency_count = HUD_HISTORY, .load_count = HUD_HISTORY };
+    for (int i = 0; i < HUD_HISTORY; i++) {
+        const float wobble = (float)((i * 29) % 9) - 4.0f;
+        hist.latency[i][0] = 2.0f;
+        hist.latency[i][1] = 5.0f + (i % 13 == 0 ? 3.0f : 0.0f);
+        hist.latency[i][2] = 18.0f + wobble;
+        hist.latency[i][3] = 14.0f + (float)((i * 7) % 5);
+        hist.cpu[i] = (uint8_t)(62 + (i * 13) % 9);
+        hist.cpu_peak[i] = (uint8_t)(88 + (i * 5) % 8);
+        hist.gpu[i] = (uint8_t)(16 + (i * 11) % 5);
+    }
+    hist.latency[64][2] = 34.0f;   /* a slow frame */
+    ui_draw_stats(STATS_COMPACT, &hud, &perf, &net, &hist);
     overlay_draw(W, H, "Desktop", STATS_COMPACT);
     snprintf(path, sizeof path, "%s/9-stream-menu.png", dir);
     write_png(path);
@@ -361,14 +373,14 @@ int main(int argc, char **argv)
     clear();
     fake_game();
     gfx_frame_begin(W, H);
-    ui_draw_stats(STATS_DETAILED, &hud, &perf, &net);
+    ui_draw_stats(STATS_DETAILED, &hud, &perf, &net, &hist);
     snprintf(path, sizeof path, "%s/10-stats.png", dir);
     write_png(path);
 
     clear();
     fake_game();
     gfx_frame_begin(W, H);
-    ui_draw_stats(STATS_COMPACT, &hud, &perf, &net);
+    ui_draw_stats(STATS_COMPACT, &hud, &perf, &net, &hist);
     snprintf(path, sizeof path, "%s/11-stats-compact.png", dir);
     write_png(path);
 
@@ -387,7 +399,7 @@ int main(int argc, char **argv)
     clear();
     fake_game();
     gfx_frame_begin(W, H);
-    ui_draw_stats(STATS_DETAILED, &troubled, &perf, &bad);
+    ui_draw_stats(STATS_DETAILED, &troubled, &perf, &bad, &hist);
     snprintf(path, sizeof path, "%s/12-stats-trouble.png", dir);
     write_png(path);
 

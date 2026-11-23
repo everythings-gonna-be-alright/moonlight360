@@ -103,7 +103,7 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t frame_ready = PTHREAD_COND_INITIALIZER;   /* pending was set */
 static AVFrame *pending;   /* newest decoded frame, handed to the renderer */
 static VideoStats stats;
-static uint64_t pending_decoded_us;
+static FrameTimes pending_times;
 
 /* Latency sums over the current second, on LiGetMicroseconds' clock (the one DECODE_UNIT's times use). Decode
  * thread only; the averages go into stats under lock. */
@@ -443,7 +443,12 @@ static int submit(PDECODE_UNIT unit)
         }
         pending = out;
         const uint64_t decoded_us = LiGetMicroseconds();
-        pending_decoded_us = decoded_us;
+        pending_times = (FrameTimes){
+            .decoded_us = decoded_us,
+            .host_ms = unit->frameHostProcessingLatency ? unit->frameHostProcessingLatency / 10.0f : -1.0f,
+            .receive_ms = (float)(unit->enqueueTimeUs - unit->receiveTimeUs) / 1000.0f,
+            .decode_ms = (float)(decoded_us - unit->enqueueTimeUs) / 1000.0f,
+        };
         stats.decoded++;
         pthread_cond_broadcast(&frame_ready);
         pthread_mutex_unlock(&lock);
@@ -486,13 +491,13 @@ bool video_wait_frame(uint32_t timeout_us)
     return ready;
 }
 
-struct AVFrame *video_take_frame(uint64_t *decoded_us)
+struct AVFrame *video_take_frame(FrameTimes *times)
 {
     pthread_mutex_lock(&lock);
     AVFrame *out = pending;
     pending = NULL;
-    if (decoded_us)
-        *decoded_us = pending_decoded_us;
+    if (times)
+        *times = pending_times;
     pthread_mutex_unlock(&lock);
     return out;
 }

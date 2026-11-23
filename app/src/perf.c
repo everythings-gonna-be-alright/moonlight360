@@ -13,7 +13,7 @@
 enum {
     HW_THREADS = 6,
     PROBE_SLEEP_MS = 1,
-    SAMPLE_MS = 1000,
+    SAMPLE_MS = 500,
     GPU_SLOTS = 8,               /* frames of clock stamps in flight */
     GPU_CLOCKS_PER_MS = 498750,  /* xsdk gpu.h: 498.75 a microsecond */
     /* HalSendSMCMessage: xboxkrnl ordinal 0x29, beside HalReturnToFirmware (0x28) that devlaunch reboots with. */
@@ -97,7 +97,7 @@ static void read_temperatures(PerfReadings *r)
 
 static atomic_uint_fast64_t gpu_busy_ticks;
 
-/* Each second: a probe's rounds times its idle round time is its hardware thread's idle share; the rest is load
+/* Twice a second: a probe's rounds times its idle round time is its hardware thread's idle share; the rest is load
  * (the app's, XAM's and the kernel's alike). */
 static uint32_t sampler(void *context)
 {
@@ -137,7 +137,9 @@ static uint32_t sampler(void *context)
         last_gpu = g;
         const int gpu = (int)(100.0 * gpu_ms / (elapsed_us / 1000.0) + 0.5);
         r.gpu = gpu > 100 ? 100 : gpu;
-        read_temperatures(&r);
+        if (r.sample % 2 == 0)   /* temperatures change slowly: the system controller is asked once a second */
+            read_temperatures(&r);
+        r.sample++;
         pthread_mutex_lock(&lock);
         readings = r;
         pthread_mutex_unlock(&lock);

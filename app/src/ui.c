@@ -149,14 +149,13 @@ static float latency_total(const HudStats *h, bool *partial)
 enum {
     HUD_X = 12, HUD_Y = 10, HUD_PAD = 12, HUD_ROW = 24, HUD_W = 470,
     HUD_PANEL = 0xC0080C14,
-    NET_GRAPH_W = NET_HISTORY * 2, NET_GRAPH_H = 18,
-    LOAD_BAR_W = 6, LOAD_BAR_H = 16,
+    NET_GRAPH_W = NET_HISTORY * 2, NET_GRAPH_H = 22,
     LATENCY_SCALE_MS = 100,   /* the latency bar's full width */
 };
 
 /* The latency parts, in the bar and its legend. */
 static const uint32_t part_colours[4] = { 0xFF9D7BFF, 0xFF4A9BFF, 0xFFE8B04A, 0xFF4CC3B0 };
-static const char *const part_names[4] = { "PC", "net", "decode", "display" };
+static const char *const part_names[4] = { "PC", "net", "dec", "disp" };
 
 /* Text pieces drawn one after another; returns the x after the last. */
 typedef struct {
@@ -186,7 +185,7 @@ static int32_t draw_pieces(int32_t x, int32_t y, const Piece *p, int n)
 static void draw_arrivals(float gx, float gy, const NetStats *net)
 {
     const float gw = (float)NET_GRAPH_W, gh = (float)NET_GRAPH_H;
-    gfx_rect(gx - 3.0f, gy - 2.0f, gw + 6.0f, gh + 4.0f, 3.0f, 0x60000000);
+    gfx_rect(gx - 3.0f, gy - 2.0f, gw + 6.0f, gh + 4.0f, 3.0f, 0x60000000);   /* as graph_back */
     if (net->budget_ms <= 0.0f)
         return;
     const float top_ms = 3.0f * net->budget_ms;
@@ -202,7 +201,7 @@ static void draw_arrivals(float gx, float gy, const NetStats *net)
         } else if (ms > 2.0f * net->budget_ms) {
             colour = THEME_WARN;
         }
-        gfx_rect(gx + (float)((start + i) * 2), gy + gh - bh, 1.0f, bh, 0.0f, colour);
+        gfx_rect(gx + (float)((start + i) * 2), gy + gh - bh, 2.0f, bh, 0.0f, colour);
     }
     gfx_rect(gx - 1.0f, gy + gh - gh / 3.0f, gw + 1.0f, 1.0f, 0.0f, 0x60FFFFFF);   /* one frame time */
 }
@@ -240,18 +239,71 @@ static void draw_compact(const HudStats *h, const NetStats *net)
     draw_pieces(HUD_X + HUD_PAD + 16, HUD_Y + 6, p, n);
 }
 
-/* Headline, latency bar and legend, network, load, and any trouble of the last five seconds. */
-static void draw_detailed(const HudStats *h, const PerfReadings *perf, const NetStats *net)
+/* The graphs' common frame, right-aligned on a row. */
+enum { LOAD_GRAPH = 0xB04A9BFF, TEMP_X = 210, GRAPH_W = HUD_HISTORY * 2, GRAPH_H = 22, GRAPH_ROW = 30, LATENCY_GRAPH_H = 44, LATENCY_GRAPH_MS = 80 };
+
+static void graph_back(float gx, float gy, float gh)
 {
-    char text[128], a[32], b[32];
+    gfx_rect(gx - 3.0f, gy - 2.0f, GRAPH_W + 6.0f, gh + 4.0f, 3.0f, 0x60000000);
+}
+
+/* Index of the i-th oldest entry of a ring with count entries and next. */
+static int ring_at(int i, int count, int next)
+{
+    return count < HUD_HISTORY ? i : (next + i) % HUD_HISTORY;
+}
+
+/* Each shown frame's latency, its parts stacked in the legend's colours; full height is 80 ms (a frame over it is
+ * cut off at the top). */
+static void draw_latency_graph(float gx, float gy, const HudHistory *h)
+{
+    const float gh = (float)LATENCY_GRAPH_H;
+    graph_back(gx, gy, gh);
+    const int start = HUD_HISTORY - h->latency_count;   /* newest at the right edge */
+    for (int i = 0; i < h->latency_count; i++) {
+        const float *parts = h->latency[ring_at(i, h->latency_count, h->latency_next)];
+        float y = gy + gh;
+        for (int p = 0; p < LATENCY_PARTS && y > gy; p++) {
+            float ph = gh * parts[p] / LATENCY_GRAPH_MS;
+            ph = y - ph < gy ? y - gy : ph;
+            if (ph > 0.0f)
+                gfx_rect(gx + (float)((start + i) * 2), y - ph, 2.0f, ph, 0.0f, part_colours[p]);
+            y -= ph;
+        }
+    }
+    gfx_rect(gx, gy + gh / 2, GRAPH_W, 1.0f, 0.0f, 0x30FFFFFF);   /* 40 ms */
+}
+
+/* A load, 0-100, sample by sample; with peak (if not NULL) as a light mark on each. */
+static void draw_load_graph(float gx, float gy, const uint8_t *load, const uint8_t *peak, int count, int next)
+{
+    graph_back(gx, gy, GRAPH_H);
+    const int start = HUD_HISTORY - count;
+    for (int i = 0; i < count; i++) {
+        const int at = ring_at(i, count, next);
+        const float x = gx + (float)((start + i) * 2);
+        float bh = (float)GRAPH_H * load[at] / 100.0f;
+        bh = bh < 1.0f ? 1.0f : bh;
+        gfx_rect(x, gy + GRAPH_H - bh, 2.0f, bh, 0.0f, LOAD_GRAPH);
+        if (peak && peak[at] > load[at])
+            gfx_rect(x, gy + GRAPH_H - (float)GRAPH_H * peak[at] / 100.0f, 2.0f, 1.0f, 0.0f, 0xA0FFFFFF);
+    }
+}
+
+/* Headline; then rows of a label and value on the left and a graph on the right: latency (with its parts' legend
+ * under it), network, CPU, GPU; and any trouble of the last five seconds. */
+static void draw_detailed(const HudStats *h, const PerfReadings *perf, const NetStats *net, const HudHistory *hist)
+{
+    char text[128], a[32], b[32], c[32];
     const bool trouble = h->dropped || h->errors || h->audio_gaps;
-    const int rows = 5 + (trouble ? 1 : 0);
-    const float panel_h = (float)(2 * HUD_PAD + rows * HUD_ROW - 6);
+    const float panel_h = (float)(2 * HUD_PAD + HUD_ROW + 4 + (LATENCY_GRAPH_H + 10) + 3 * GRAPH_ROW +
+                                  (trouble ? HUD_ROW : 0) - 6);
     gfx_rect(HUD_X, HUD_Y, HUD_W + 2 * HUD_PAD, panel_h, 10.0f, HUD_PANEL);
     const int32_t x = HUD_X + HUD_PAD, right = x + HUD_W;
+    const float gx = (float)(right - GRAPH_W);
     int32_t y = HUD_Y + HUD_PAD;
 
-    /* Headline: health, frame rate, latency; the stream's format on the right. */
+    /* Headline: health and frame rate; the stream's format on the right. */
     bool partial;
     const float total = latency_total(h, &partial);
     const uint32_t health = h->ready ? worst(worst(fps_colour(h), loss_colour(net->loss_pct)),
@@ -259,55 +311,41 @@ static void draw_detailed(const HudStats *h, const PerfReadings *perf, const Net
                                      : THEME_TEXT_3;
     gfx_circle((float)x + 5.0f, (float)y + 10.0f, 5.0f, health);
     snprintf(a, sizeof a, h->ready ? "%.0f" : "--", h->fps);
-    if (total >= 0)
-        snprintf(b, sizeof b, "%.0f%s", total, partial ? "+" : "");
-    else
-        snprintf(b, sizeof b, "--");
-    const Piece head[] = {
-        { a, h->ready ? fps_colour(h) : THEME_TEXT_3 }, { " fps    ", THEME_TEXT_2 },
-        { b, total >= 0 ? latency_colour(total) : THEME_TEXT_3 }, { " ms latency", THEME_TEXT_2 },
-    };
-    draw_pieces(x + 18, y, head, 4);
+    snprintf(b, sizeof b, " of %.0f fps", h->target_fps);
+    const Piece head[] = { { a, h->ready ? fps_colour(h) : THEME_TEXT_3 }, { b, THEME_TEXT_2 } };
+    draw_pieces(x + 18, y, head, 2);
     snprintf(text, sizeof text, "%dp%s%s%s", h->height, h->cabac < 0 ? "" : h->cabac ? "  CABAC" : "  CAVLC",
              h->fast_decode ? "  fast" : "", h->gpu_decode ? "  GPU" : "");
     gfx_text_right(right, y, 1, THEME_TEXT_3, text);
-    y += HUD_ROW;
+    y += HUD_ROW + 4;
 
-    /* Where the latency goes: a bar as long as the total (full width = 100 ms), split by part, and its legend. */
+    /* Latency: the total and a graph of each frame's, then its parts' legend with the last second's averages. */
+    if (total >= 0)
+        snprintf(a, sizeof a, "%.0f%s", total, partial ? "+" : "");
+    else
+        snprintf(a, sizeof a, "--");
+    const Piece lat[] = { { "Latency ", THEME_TEXT_2 }, { a, total >= 0 ? latency_colour(total) : THEME_TEXT_3 },
+                          { " ms", THEME_TEXT_2 } };
+    draw_pieces(x, y, lat, 3);
+    draw_latency_graph(gx, (float)y, hist);
+    y += 24;
     const float parts[4] = { h->host_ms > 0 ? h->host_ms : 0.0f, h->net_ms, h->decode_ms,
                              h->display_ms > 0 ? h->display_ms : 0.0f };
-    const float bar_w = (float)HUD_W;
-    gfx_rect((float)x, (float)y + 2.0f, bar_w, 8.0f, 4.0f, THEME_TRACK);
-    if (total > 0) {
-        float bx = (float)x;
-        for (int i = 0; i < 4; i++) {
-            float w = bar_w * parts[i] / LATENCY_SCALE_MS;
-            if (bx + w > x + bar_w)
-                w = x + bar_w - bx;
-            if (w >= 1.0f)
-                gfx_rect(bx, (float)y + 2.0f, w, 8.0f, i == 0 || bx + w >= x + bar_w - 1 ? 4.0f : 0.0f,
-                         part_colours[i]);
-            bx += w;
-        }
-    }
-    y += 16;
+    /* The legend: each part's name and value in its colour in the graph. */
     int32_t lx = x;
     for (int i = 0; i < 4; i++) {
-        gfx_rect((float)lx, (float)y + 6.0f, 8.0f, 8.0f, 2.0f, part_colours[i]);
-        lx += 14;
         if (i == 0 && h->host_ms < 0)
             snprintf(text, sizeof text, "%s ?", part_names[i]);
         else if (!h->ready || (i == 3 && h->display_ms < 0))
             snprintf(text, sizeof text, "%s --", part_names[i]);
         else
             snprintf(text, sizeof text, "%s %.0f", part_names[i], parts[i]);
-        gfx_text(lx, y, 1, THEME_TEXT_2, text);
-        lx += gfx_text_width(text, 1) + 18;
+        gfx_text(lx, y, 1, part_colours[i], text);
+        lx += gfx_text_width(text, 1) + 14;
     }
-    gfx_text_right(right, y, 1, THEME_TEXT_3, "ms");
-    y += HUD_ROW;
+    y += LATENCY_GRAPH_H + 10 - 24;
 
-    /* Network: ping and loss, and the last frames' arrivals on the right. */
+    /* Network: ping and loss; the last frames' arrivals. */
     if (net->rtt_ms >= 0)
         snprintf(a, sizeof a, "%d", net->rtt_ms);
     else
@@ -315,39 +353,44 @@ static void draw_detailed(const HudStats *h, const PerfReadings *perf, const Net
     snprintf(b, sizeof b, net->loss_pct > 0 ? "%.1f%%" : "0%%", net->loss_pct);
     const Piece netp[] = {
         { "Ping ", THEME_TEXT_2 }, { a, net->rtt_ms >= 0 ? ping_colour(net->rtt_ms) : THEME_TEXT_3 },
-        { " ms    Loss ", THEME_TEXT_2 }, { b, loss_colour(net->loss_pct) },
+        { " ms   Loss ", THEME_TEXT_2 }, { b, loss_colour(net->loss_pct) },
     };
     draw_pieces(x, y, netp, 4);   /* lost frames show in the graph, as red bars */
-    draw_arrivals((float)(right - NET_GRAPH_W), (float)y + 1.0f, net);
-    y += HUD_ROW;
+    draw_arrivals(gx, (float)y + 1.0f, net);
+    y += GRAPH_ROW;
 
-    /* Load: a small bar per hardware thread, grouped by core; the GPU's; CPU and GPU temperatures. */
-    snprintf(text, sizeof text, perf->cpu_average >= 0 ? "CPU %d%%" : "CPU --", perf->cpu_average);
-    gfx_text(x, y, 1, THEME_TEXT_2, text);
-    float bx = (float)(x + gfx_text_width("CPU 100%", 1) + 8);
-    for (int hw = 0; hw < 6; hw++) {
-        const int load = perf->cpu[hw] < 0 ? 0 : perf->cpu[hw];
-        gfx_rect(bx, (float)y + 2.0f, LOAD_BAR_W, LOAD_BAR_H, 2.0f, THEME_TRACK);
-        const float fill = (float)LOAD_BAR_H * (float)load / 100.0f;
-        if (fill >= 1.0f)
-            gfx_rect(bx, (float)y + 2.0f + LOAD_BAR_H - fill, LOAD_BAR_W, fill, 2.0f, load_colour(load));
-        bx += LOAD_BAR_W + (hw % 2 ? 8.0f : 2.0f);   /* wider gaps between cores */
-    }
-    bx += 10.0f;
-    snprintf(text, sizeof text, perf->gpu >= 0 ? "GPU %d%%" : "GPU --", perf->gpu);
-    gfx_text((int32_t)bx, y, 1, THEME_TEXT_2, text);
-    bx += (float)(gfx_text_width("GPU 100%", 1) + 8);
-    const float gpu = perf->gpu < 0 ? 0.0f : (float)perf->gpu;
-    gfx_rect(bx, (float)y + 6.0f, 56.0f, 8.0f, 4.0f, THEME_TRACK);
-    if (gpu > 0)
-        gfx_rect(bx, (float)y + 6.0f, 8.0f + 48.0f * gpu / 100.0f, 8.0f, 4.0f, load_colour(perf->gpu));
-    if (perf->temp_cpu > 0) {
-        const float hottest = perf->temp_cpu > perf->temp_gpu ? perf->temp_cpu : perf->temp_gpu;
-        snprintf(text, sizeof text, "%.0f\xC2\xB0 / %.0f\xC2\xB0" "C", perf->temp_cpu, perf->temp_gpu);
-        gfx_text_right(right, y, 1, temperature_colour(hottest) == THEME_TEXT_2 ? THEME_TEXT_3
-                                                                              : temperature_colour(hottest), text);
-    }
-    y += HUD_ROW;
+    /* CPU: average and busiest hardware thread, temperature; load over time. */
+    int peak = -1;
+    for (int hw = 0; hw < 6; hw++)
+        peak = perf->cpu[hw] > peak ? perf->cpu[hw] : peak;
+    snprintf(a, sizeof a, perf->cpu_average >= 0 ? "%d%%" : "--", perf->cpu_average);
+    snprintf(b, sizeof b, peak >= 0 ? "%d%%" : "--", peak);
+    c[0] = 0;
+    if (perf->temp_cpu > 0)
+        snprintf(c, sizeof c, "%.0f\xC2\xB0" "C", perf->temp_cpu);
+    /* One hardware thread near 100% is normal (the decode thread); colour the peak only when it is pinned. */
+    const uint32_t peak_colour = peak >= 99 ? THEME_ERROR : peak >= 95 ? THEME_WARN : THEME_TEXT_2;
+    const Piece cpu[] = {
+        { "CPU ", THEME_TEXT_2 }, { a, perf->cpu_average >= 0 ? load_colour(perf->cpu_average) : THEME_TEXT_3 },
+        { "  peak ", THEME_TEXT_3 }, { b, peak >= 0 ? peak_colour : THEME_TEXT_3 },
+    };
+    draw_pieces(x, y, cpu, 4);
+    gfx_text(x + TEMP_X, y, 1,
+             temperature_colour(perf->temp_cpu) == THEME_TEXT_2 ? THEME_TEXT_3 : temperature_colour(perf->temp_cpu), c);
+    draw_load_graph(gx, (float)y + 1.0f, hist->cpu, hist->cpu_peak, hist->load_count, hist->load_next);
+    y += GRAPH_ROW;
+
+    /* GPU: load and temperature; load over time. */
+    snprintf(a, sizeof a, perf->gpu >= 0 ? "%d%%" : "--", perf->gpu);
+    c[0] = 0;
+    if (perf->temp_gpu > 0)
+        snprintf(c, sizeof c, "%.0f\xC2\xB0" "C", perf->temp_gpu);
+    const Piece gpu[] = { { "GPU ", THEME_TEXT_2 }, { a, perf->gpu >= 0 ? load_colour(perf->gpu) : THEME_TEXT_3 } };
+    draw_pieces(x, y, gpu, 2);
+    gfx_text(x + TEMP_X, y, 1,
+             temperature_colour(perf->temp_gpu) == THEME_TEXT_2 ? THEME_TEXT_3 : temperature_colour(perf->temp_gpu), c);
+    draw_load_graph(gx, (float)y + 1.0f, hist->gpu, NULL, hist->load_count, hist->load_next);
+    y += GRAPH_ROW;
 
     /* Trouble, only when there is some. */
     if (trouble) {
@@ -364,12 +407,13 @@ static void draw_detailed(const HudStats *h, const PerfReadings *perf, const Net
     }
 }
 
-void ui_draw_stats(int mode, const HudStats *hud, const PerfReadings *perf, const NetStats *net)
+void ui_draw_stats(int mode, const HudStats *hud, const PerfReadings *perf, const NetStats *net,
+                   const HudHistory *history)
 {
     if (mode == STATS_COMPACT)
         draw_compact(hud, net);
     else if (mode == STATS_DETAILED)
-        draw_detailed(hud, perf, net);
+        draw_detailed(hud, perf, net, history);
 }
 
 void ui_draw_temperatures(const PerfReadings *perf)

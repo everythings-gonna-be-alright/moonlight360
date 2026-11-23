@@ -29,3 +29,14 @@ typedef struct {
     /* Trouble in the last 5 seconds. */
     uint32_t dropped, errors, audio_gaps;
 } HudStats;
+
+/* The detailed HUD's graphs, newest last: a frame's latency in its four parts (PC, network, decode, display; ms),
+ * shown frame by frame; and load (0-100: CPU average, its busiest hardware thread, GPU), twice a second. Rings: the
+ * oldest entry is at next once count reaches HUD_HISTORY. */
+enum { HUD_HISTORY = 90, LATENCY_PARTS = 4 };
+typedef struct {
+    float latency[HUD_HISTORY][LATENCY_PARTS];
+    int latency_count, latency_next;
+    uint8_t cpu[HUD_HISTORY], cpu_peak[HUD_HISTORY], gpu[HUD_HISTORY];
+    int load_count, load_next;
+} HudHistory;

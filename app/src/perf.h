@@ -12,6 +12,8 @@ typedef struct {
     int gpu;
     /* Degrees C, from the system controller; 0 if unknown. */
     float temp_cpu, temp_gpu, temp_edram, temp_board;
+    /* Counts the samples (twice a second), so a reader sees when a new one came. */
+    uint32_t sample;
 } PerfReadings;
 
 /* Starts the idle probes and the sampler (once). */

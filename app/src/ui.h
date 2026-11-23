@@ -16,8 +16,9 @@ void ui_draw_status(uint32_t width, uint32_t height, const char *title, const ch
 /* Button hints along the bottom: buttons[i] (see gfx_button) with labels[i]; a NULL label shares the next one's. */
 void ui_draw_hints(const char *buttons, const char *const *labels);
 /* The stats HUD at the top left, over the video. STATS_COMPACT: one line (health, frame rate, latency, ping, loss).
- * STATS_DETAILED: a headline, where the latency goes, the network with a graph of the last frames' arrivals, the
- * console's load, and any trouble of the last five seconds. STATS_OFF draws nothing. */
-void ui_draw_stats(int mode, const HudStats *hud, const PerfReadings *perf, const NetStats *net);
+ * STATS_DETAILED: a headline, then latency, network, CPU and GPU, each a value with a graph of its recent past, and
+ * any trouble of the last five seconds. STATS_OFF draws nothing. */
+void ui_draw_stats(int mode, const HudStats *hud, const PerfReadings *perf, const NetStats *net,
+                   const HudHistory *history);
 /* Temperatures, small, at the bottom right of the menus. */
 void ui_draw_temperatures(const PerfReadings *perf);
