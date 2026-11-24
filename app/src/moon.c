@@ -14,7 +14,8 @@
 static const uint32_t MOON = 0xFFF4EBCF, CRATER = 0xFFE2D5B0, STAR_RGB = 0x00E6E6EA, SATELLITE_RGB = 0x009A9AA2,
                       CLOUD_RGB = 0x0026262B, CLOUD_RIM_RGB = 0x003E3D40, BLOOD_MOON = 0xFFD9653B,
                       BLOOD_CRATER = 0xFFB04A2A, COMET_RGB = 0x00BFE4FF, BIRD = 0xFF0C0C0E, UFO_BODY = 0xFF9A9AA6,
-                      UFO_DOME = 0xFFCFE8F0;
+                      UFO_DOME = 0xFFCFE8F0, AURORA_GREEN = 0x0057F2A6, AURORA_VIOLET = 0x009B6BFF,
+                      FIREFLY_RGB = 0x00D9F56A, PLANE_RED = 0x00FF4A3A, PLANE_GREEN = 0x0046F27A;
 static const float FRAMES_PER_SECOND = 60.0f;
 
 /* Stars: x, y (in moon radii from the centre), size, twinkle period in seconds. */
@@ -35,6 +36,9 @@ static Event shooting = { .next = 3.0f }, cloud = { .next = 9.0f }, glint = { .n
  * and now and then a UFO. */
 static Event birds = { .next = 30.0f }, comet = { .next = 45.0f }, shower = { .next = 70.0f },
              blood = { .next = 150.0f }, ufo = { .next = 240.0f };
+/* And rarer still: fireflies, a constellation drawing itself, a plane, an aurora. */
+static Event fireflies = { .next = 100.0f }, constellation = { .next = 120.0f }, plane = { .next = 190.0f },
+             aurora = { .next = 300.0f };
 
 static uint32_t seed = 0x9E3779B9u;
 
@@ -314,6 +318,129 @@ static void draw_cloud(float cx, float cy, float r, float t)
     gfx_rect(x - 0.78f * s, y - 0.04f * s, 1.56f * s, 0.22f * s, 0.11f * s, body);   /* the flat bottom */
 }
 
+/* An aurora, rarely: two curtains of light rippling across the top of the sky, green and violet, bright at the bottom
+ * and fading up. Columns side by side, each a vertical gradient, so nothing overlaps. */
+static void draw_aurora(float cx, float cy, float r, float t)
+{
+    enum { COLUMNS = 60 };
+    bool started;
+    const float p = progress(&aurora, t, 20.0f, 360.0f, 600.0f, &started);
+    if (started)
+        aurora.a = random_range(0.0f, TAU);   /* its own ripple */
+    if (p < 0.0f)
+        return;
+    const float seen = fade(p, 0.25f);
+    const float left = cx - 2.4f * r, step = 4.8f * r / COLUMNS;
+    for (int layer = 0; layer < 2; layer++) {
+        const uint32_t rgb = layer ? AURORA_VIOLET : AURORA_GREEN;
+        const float base = cy - (layer ? 1.55f : 1.25f) * r, strength = layer ? 0.26f : 0.38f;
+        for (int i = 0; i < COLUMNS; i++) {
+            const float u = (float)i / (COLUMNS - 1);
+            /* The curtain's lower edge waves; its height and brightness ripple along it, both drifting with time. */
+            const float wave = sinf(u * 5.0f + t * 0.7f + aurora.a + (float)layer) * 0.12f * r +
+                               sinf(u * 11.0f - t * 1.1f) * 0.04f * r;
+            const float ripple = 0.55f + 0.45f * sinf(u * 9.0f + t * 1.6f + aurora.a * 2.0f + (float)layer * 2.0f);
+            const float edges = clamp01(u / 0.2f) * clamp01((1.0f - u) / 0.2f);   /* thinning out at both ends */
+            const float h = (0.35f + 0.25f * ripple) * r;
+            const float a = seen * strength * ripple * edges;
+            const float x = left + step * (float)i, bottom = base + wave, soft = 0.12f * r;
+            gfx_rect_v(x, bottom - h, step, h, 0.0f, with_alpha(rgb, 0.0f), with_alpha(rgb, a));
+            gfx_rect_v(x, bottom, step, soft, 0.0f, with_alpha(rgb, a), with_alpha(rgb, 0.0f));   /* a soft lower edge */
+        }
+    }
+}
+
+/* A constellation: lines drawn from star to star, held a moment, faded. Dotted, as if traced. */
+static void draw_constellation(float cx, float cy, float r, float t)
+{
+    /* Stars (by index) joined in order; -1 ends a figure. */
+    static const int figures[][5] = { { 0, 5, 3, -1 }, { 4, 1, 6, 2, -1 }, { 0, 4, 1, -1 }, { 6, 2, 7, -1 } };
+    bool started;
+    const float p = progress(&constellation, t, 6.0f, 120.0f, 240.0f, &started);
+    if (started)
+        constellation.a = (float)(int)random_range(0.0f, (float)COUNT(figures) - 0.01f);
+    if (p < 0.0f)
+        return;
+    const int *figure = figures[(int)constellation.a];
+    int segments = 0;
+    while (segments < 4 && figure[segments + 1] >= 0)
+        segments++;
+    const float drawn = clamp01(p / 0.4f) * (float)segments;   /* traced over the first 40% */
+    const float alpha = 0.7f * clamp01((1.0f - p) / 0.3f);
+    for (int s = 0; s < segments && (float)s < drawn; s++) {
+        const float *a = stars[figure[s]], *b = stars[figure[s + 1]];
+        const float x0 = cx + a[0] * r, y0 = cy + a[1] * r, x1 = cx + b[0] * r, y1 = cy + b[1] * r;
+        const float length = sqrtf((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
+        int dots = (int)(length / 9.0f);
+        if (dots > 28)
+            dots = 28;
+        const float done = clamp01(drawn - (float)s);
+        for (int k = 1; k < dots; k++) {   /* not on the stars themselves */
+            const float u = (float)k / (float)dots;
+            if (u > done)
+                break;
+            gfx_circle(x0 + (x1 - x0) * u, y0 + (y1 - y0) * u, 1.4f, with_alpha(STAR_RGB, alpha));
+        }
+    }
+    for (int s = 0; s <= segments && (float)s <= drawn + 0.001f; s++) {   /* the stars it reached, glowing */
+        const float *a = stars[figure[s]];
+        gfx_circle(cx + a[0] * r, cy + a[1] * r, 5.0f, with_alpha(STAR_RGB, 0.25f * alpha));
+    }
+}
+
+/* A plane, high up: slow, a red and a green light at its wingtips and a white strobe flashing twice. */
+static void draw_plane(float cx, float cy, float r, float t)
+{
+    bool started;
+    const float p = progress(&plane, t, 22.0f, 150.0f, 300.0f, &started);
+    if (started) {
+        plane.a = random_range(0.0f, 1.0f) < 0.5f ? -1.0f : 1.0f;   /* which way */
+        plane.b = cy + random_range(-1.85f, -1.3f) * r;
+        plane.c = random_range(-0.3f, 0.3f) * r;
+    }
+    if (p < 0.0f)
+        return;
+    const float x = cx + plane.a * (p * 2.0f - 1.0f) * 2.4f * r, y = plane.b + plane.c * p;
+    const float seen = fade(p, 0.08f);
+    /* Seen from below, flying right its left wing (red) is the far one, up; flying left, the near one. */
+    gfx_circle(x - 5.0f, y - plane.a * 1.0f, 2.3f, with_alpha(PLANE_RED, 0.9f * seen));
+    gfx_circle(x + 5.0f, y + plane.a * 1.0f, 2.3f, with_alpha(PLANE_GREEN, 0.9f * seen));
+    const float beat = fmodf(t - plane.start, 1.4f);
+    if (beat < 0.06f || (beat > 0.2f && beat < 0.26f)) {
+        gfx_circle(x, y, 9.0f, with_alpha(0x00FFFFFF, 0.22f * seen));
+        gfx_circle(x, y, 3.0f, with_alpha(0x00FFFFFF, seen));
+    }
+}
+
+/* Fireflies: a few soft yellow-green lights wandering low beside the moon, each glowing and dimming on its own. */
+static void draw_fireflies(float cx, float cy, float r, float t)
+{
+    enum { FLIES = 8 };
+    bool started;
+    const float p = progress(&fireflies, t, 14.0f, 150.0f, 270.0f, &started);
+    if (started)
+        fireflies.a = random_range(0.0f, TAU);
+    if (p < 0.0f)
+        return;
+    const float seen = fade(p, 0.2f);
+    for (int i = 0; i < FLIES; i++) {
+        const float fi = (float)i, phase = fireflies.a + fi * 2.39f;
+        /* Home spots either side of the moon, low; each loops lazily around its own. */
+        const float home_x = (i % 2 ? 1.0f : -1.0f) * (1.35f + 0.22f * (float)(i / 2)) * r;
+        const float home_y = (0.55f + 0.18f * sinf(phase * 3.0f)) * r;
+        const float x = cx + home_x + 0.22f * r * sinf(t * (0.35f + 0.05f * fi) + phase);
+        const float y = cy + home_y + 0.12f * r * sinf(t * (0.5f + 0.04f * fi) + phase * 1.7f);
+        const float pulse = sinf(t * (1.1f + 0.13f * fi) + phase * 3.1f);
+        const float glow = seen * clamp01(pulse * 1.4f);   /* dark half the time */
+        if (glow <= 0.0f)
+            continue;
+        gfx_circle(x, y, 12.0f, with_alpha(FIREFLY_RGB, 0.07f * glow));   /* a soft glow: rings, fainter outward */
+        gfx_circle(x, y, 8.0f, with_alpha(FIREFLY_RGB, 0.09f * glow));
+        gfx_circle(x, y, 4.5f, with_alpha(FIREFLY_RGB, 0.16f * glow));
+        gfx_circle(x, y, 2.4f, with_alpha(FIREFLY_RGB, glow));
+    }
+}
+
 void moon_draw(float cx, float cy, float r)
 {
     const float t = (float)gfx_frame() / FRAMES_PER_SECOND;
@@ -329,9 +456,12 @@ void moon_draw(float cx, float cy, float r)
     const uint32_t moon = mix(MOON, BLOOD_MOON, red), crater = mix(CRATER, BLOOD_CRATER, red);
 
     /* Back to front: sky, moon, what flies in front of it, cloud. */
+    draw_aurora(cx, cy, r, t);
     draw_stars(cx, cy, r, t);
+    draw_constellation(cx, cy, r, t);
     draw_comet(cx, cy, r, t);
     draw_satellite(cx, cy, r, t);
+    draw_plane(cx, cy, r, t);
     draw_ufo(cx, cy, r, t);
     draw_shooting_star(cx, cy, r, t);
     draw_shower(cx, cy, r, t);
@@ -344,5 +474,6 @@ void moon_draw(float cx, float cy, float r)
     gfx_circle(cx - r * 0.05f + turn, my + r * 0.45f, r * 0.10f, crater);
 
     draw_birds(cx, cy, r, t);
+    draw_fireflies(cx, cy, r, t);
     draw_cloud(cx, cy, r, t);
 }
