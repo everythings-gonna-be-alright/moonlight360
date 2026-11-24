@@ -28,7 +28,6 @@ enum {
     ITEM_BITRATE,
     ITEM_FAST_DECODE,
     ITEM_LOW_LATENCY,
-    ITEM_PICTURE,
     ITEM_STATS,
     ITEM_AUDIO_ON_HOST,
     ITEM_AUDIO_PACKETS,
@@ -96,8 +95,8 @@ typedef struct {
 
 static const Tab tabs[TABS] = {
     { "Play", 3, { ITEM_CONNECT, ITEM_APP, ITEM_HOST } },
-    { "Video", 10, { ITEM_RESOLUTION, ITEM_PICTURE, ITEM_FPS, ITEM_BITRATE, ITEM_CODEC, ITEM_LOW_LATENCY,
-                    ITEM_FAST_DECODE, ITEM_STATS, ITEM_HUD_CORNER, ITEM_HUD_SIZE } },
+    { "Video", 9, { ITEM_RESOLUTION, ITEM_FPS, ITEM_BITRATE, ITEM_CODEC, ITEM_LOW_LATENCY, ITEM_FAST_DECODE,
+                   ITEM_STATS, ITEM_HUD_CORNER, ITEM_HUD_SIZE } },
     { "Network", 4, { ITEM_WAKE, ITEM_AUDIO_PACKETS, ITEM_PACKET_SIZE, ITEM_SLICES } },
     { "Other", 9, { ITEM_AUTO_RESUME, ITEM_SHOW_RECENT, ITEM_MENU_COMBO, ITEM_AUDIO_ON_HOST, ITEM_SOUNDS, ITEM_RUMBLE,
                     ITEM_THEME, ITEM_VIDEO_TEST, ITEM_LOGGING } },
@@ -250,7 +249,7 @@ static bool is_toggle(int item)
 {
     return item == ITEM_FAST_DECODE || item == ITEM_LOW_LATENCY || item == ITEM_DECODE ||
            item == ITEM_DRAW || item == ITEM_LOGGING || item == ITEM_SOUNDS || item == ITEM_AUTO_RESUME ||
-           item == ITEM_RUMBLE || item == ITEM_WAKE || item == ITEM_SHOW_RECENT || item == ITEM_PICTURE;
+           item == ITEM_RUMBLE || item == ITEM_WAKE || item == ITEM_SHOW_RECENT;
 }
 
 static void change(int item, int step)
@@ -282,9 +281,6 @@ static void change(int item, int step)
         break;
     case ITEM_LOW_LATENCY:
         config->low_latency = !config->low_latency;
-        break;
-    case ITEM_PICTURE:
-        config->picture_1080p = !config->picture_1080p;
         break;
     case ITEM_AUDIO_ON_HOST:
         config->audio_on_host = !config->audio_on_host;
@@ -862,11 +858,6 @@ static void item_help(int item, const char **help, const char **warning)
         *help = "Skips H.264's deblocking filter: about 30% faster decoding, a slightly blockier picture. Needed for "
                 "1080p, unless the PC sends a lean stream (then leave it off).";
         break;
-    case ITEM_PICTURE:
-        *help = "On a 1080p TV, draws a 1920x1080 picture shown pixel for pixel, so a 1080p stream keeps all its "
-                "detail; on a 720p TV the picture stays 1280x720. Off, it's always 1280x720, scaled up by the "
-                "console. Takes effect the next time the app starts.";
-        break;
     case ITEM_LOW_LATENCY:
         *help = "Draws each frame the moment it's decoded instead of on a fixed beat, so it reaches the TV up to a "
                 "refresh sooner. No tearing. Turn it off if the picture stutters.";
@@ -1086,9 +1077,6 @@ static void draw_value(int item, int32_t right, int32_t y, int32_t cy, bool sele
     case ITEM_LOW_LATENCY:
         draw_switch(right, cy, config->low_latency);
         break;
-    case ITEM_PICTURE:
-        draw_switch(right, cy, config->picture_1080p);
-        break;
     case ITEM_STATS: {
         static const char *const names[STATS_MODES] = { "Off", "Compact", "Detailed" };
         draw_choice(right, y, names[config->stats_mode], selected, text);
@@ -1178,7 +1166,6 @@ static const char *item_label(int item)
     case ITEM_BITRATE: return "Bitrate";
     case ITEM_FAST_DECODE: return "Fast decode";
     case ITEM_LOW_LATENCY: return "Low-latency display";
-    case ITEM_PICTURE: return "1080p picture";
     case ITEM_STATS: return "Stats";
     case ITEM_AUDIO_ON_HOST: return "Sound plays on";
     case ITEM_AUDIO_PACKETS: return "Audio packets";
@@ -1214,7 +1201,6 @@ static Icon item_icon(int item)
     case ITEM_BITRATE: return ICON_BITRATE;
     case ITEM_FAST_DECODE: return ICON_FAST;
     case ITEM_LOW_LATENCY: return ICON_LATENCY;
-    case ITEM_PICTURE: return ICON_RESOLUTION;
     case ITEM_STATS: return ICON_STATS;
     case ITEM_AUDIO_ON_HOST: return ICON_SPEAKER;
     case ITEM_AUDIO_PACKETS: return ICON_WAVE;
@@ -1360,8 +1346,8 @@ static void draw_log(void)
 /* A small heading above row i of the tab, where a group starts, or NULL. */
 static const char *section_before(int t, int i)
 {
-    if (t == TAB_VIDEO)   /* Resolution, 1080p picture, Frame rate, Bitrate, Codec | Low-latency, Fast decode | Stats... */
-        return i == 0 ? "QUALITY" : i == 5 ? "PERFORMANCE" : i == 7 ? "STATS" : NULL;
+    if (t == TAB_VIDEO)   /* Resolution, Frame rate, Bitrate, Codec | Low-latency, Fast decode | Stats, position, size */
+        return i == 0 ? "QUALITY" : i == 4 ? "PERFORMANCE" : i == 6 ? "STATS" : NULL;
     if (t == TAB_OTHER)
         return i == 0 ? "GENERAL" : i == 3 ? "SOUND" : i == 6 ? "APPEARANCE" : i == 7 ? "DEBUG" : NULL;
     return NULL;

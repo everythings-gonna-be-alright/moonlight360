@@ -507,14 +507,13 @@ int main(void)
         printf("[E] GPU or text setup failed\n");
         return 1;
     }
-    /* The settings come first: the picture's size is one of them. */
     static Config config;
     const bool have_config = config_load(CONFIG_PATH, &config);
-    /* Video > 1080p picture (or "display=1080" in the dev server's arguments): a 1920x1080 picture shown pixel for
-     * pixel on a 1080p output, where the usual 1280x720 one is scaled up by the console (xsdk's XSDK_DISPLAY_1080P,
-     * patches/xsdk-display-1080p.patch). Elsewhere the SDK falls back to 1280x720 by itself. Ran on the console on
+    /* A 1920x1080 picture shown pixel for pixel on a 1080p output, where a 1280x720 one would be scaled up by the
+     * console (xsdk's XSDK_DISPLAY_1080P, patches/xsdk-display-1080p.patch); on any other output the SDK falls back
+     * to 1280x720 by itself. "display=720" in the dev server's arguments forces 1280x720. Ran on the console on
      * 2026-11-24: a 1080p60 stream for seven minutes, 3 of 26306 frames late, latency as at 1280x720. */
-    const bool full_hd = arg_int(devreturn_args(), "display", config.picture_1080p ? 1080 : 720) == 1080;
+    const bool full_hd = arg_int(devreturn_args(), "display", 1080) == 1080;
     uint32_t target_width = 0, target_height = 0;
     if (!NT_SUCCESS(xsdk_present_open(full_hd ? XSDK_DISPLAY_1080P : XSDK_DISPLAY_720P, BUFFERS, SWAP_INTERVAL,
                                       &target_width, &target_height))) {

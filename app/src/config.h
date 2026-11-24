@@ -48,9 +48,6 @@ typedef struct {
     int hud_size;       /* HudSize */
     bool rumble;        /* pass the PC's controller rumble on to the pads */
     int pointer_speed;  /* mouse mode's pointer: 0 slow, 1 normal, 2 fast (POINTER_SPEEDS, input.c) */
-    /* On a 1080p output, draw a 1920x1080 picture shown pixel for pixel, where the usual 1280x720 one is scaled up by
-     * the console; 1280x720 on any other output (main.c). On by default. Read once, when the app starts. */
-    bool picture_1080p;
     bool wake_on_lan;   /* wake the PC with a magic packet before connecting (wol.c) */
     char host_mac[18];  /* the PC's MAC address, "aa:bb:cc:dd:ee:ff", as it last reported it; "" unknown */
     int app_id;         /* the host's id for app, for its cover; 0 unknown (a typed name) */
