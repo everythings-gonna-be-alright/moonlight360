@@ -308,9 +308,9 @@ void config_remove_recent(Config *c, int i)
 /* The PC's apps: Sunshine's defaults and some games, with their covers (dev/menu_preview/covers); the last has
  * none, for the initial in its place. */
 static const char *const fake_apps[] = { "Desktop", "Steam Big Picture", "Red Dead Redemption 2", "Grand Theft Auto VI",
-                                         "Cyberpunk 2077", "Elden Ring", "Retro Arcade" };
-static const char *const fake_covers[] = { "desktop.png", "steam.png", "rdr2.jpg", "gta6.png", "cyberpunk.jpg",
-                                           "eldenring.jpg", NULL };
+                                         "Forza Horizon 6", "Cyberpunk 2077", "Retro Arcade" };
+static const char *const fake_covers[] = { "desktop.png", "steam.png", "rdr2.jpg", "gta6.png", "forza6.jpg",
+                                           "cyberpunk.jpg", NULL };
 static AppsState fake_state = APPS_READY;
 void apps_fetch(const char *host) { (void)host; }
 AppsState apps_state(void) { return fake_state; }
@@ -666,9 +666,9 @@ int main(int argc, char **argv)
                             .packet_size = 1392, .slices = 24, .app_id = 3, .low_latency = true, .stats_mode = 1,
                             .host_mac = "a8:5e:45:1c:2b:7f",
                             .ui_sounds = true, .rumble = true, .show_recent = true,
-                            .recent_id = { 3, 5, 4, 6 },
+                            .recent_id = { 3, 6, 4, 5 },
                             .recent_name = { "Red Dead Redemption 2", "Cyberpunk 2077", "Grand Theft Auto VI",
-                                             "Elden Ring" } };
+                                             "Forza Horizon 6" } };
         menu_open(&c, "moonlight.ini");
         int frame = 0, written = 0;
         /* Intro: the title; the menus' fade at the end leads back into it as the animation loops. */
@@ -725,9 +725,9 @@ int main(int argc, char **argv)
     static Config config = { .host = "192.168.1.100", .app = "Desktop", .width = 1920, .height = 1080, .fps = 60,
                              .bitrate_kbps = 20000, .fast_decode = false, .decode = true, .draw = true,
                              .audio_packet_ms = 20, .packet_size = 1392, .slices = 24, .app_id = 3,
-                             .recent_id = { 3, 5, 4, 6 }, .show_recent = true,
+                             .recent_id = { 3, 6, 4, 5 }, .show_recent = true,
                              .recent_name = { "Red Dead Redemption 2", "Cyberpunk 2077", "Grand Theft Auto VI",
-                                              "Elden Ring" } };
+                                              "Forza Horizon 6" } };
     snprintf(config.app, sizeof config.app, "Red Dead Redemption 2");
     menu_open(&config, "moonlight.ini");
     shot_menu(dir, "1-play");
