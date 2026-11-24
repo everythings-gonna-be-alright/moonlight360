@@ -676,7 +676,8 @@ int main(int argc, char **argv)
         static const TourStep open[] = { { 0, 70 }, { INPUT_GAMEPAD_A, 20 } };
         tour_menu(dir, open, sizeof open / sizeof open[0], 16, 0, &frame, &written);
         tour_connect(dir, &frame, &written);
-        /* Act two: the menus, one idea a beat, back home to where it started: it loops. */
+        /* Act two: the features, one a beat, building to the themes' colour; it ends there, fading into the title as
+         * the animation loops. */
         static const TourStep menus[] = {
             { 0, 44 },                                                            /* Play: the moon */
             { INPUT_GAMEPAD_DPAD_RIGHT, 22 }, { INPUT_GAMEPAD_DPAD_RIGHT, 16 },   /* Recent */
@@ -693,12 +694,9 @@ int main(int argc, char **argv)
             { INPUT_GAMEPAD_DPAD_DOWN, 7 }, { INPUT_GAMEPAD_DPAD_DOWN, 7 }, { INPUT_GAMEPAD_DPAD_DOWN, 7 },
             { INPUT_GAMEPAD_DPAD_DOWN, 7 }, { INPUT_GAMEPAD_DPAD_DOWN, 7 }, { INPUT_GAMEPAD_DPAD_DOWN, 20 },
             { INPUT_GAMEPAD_DPAD_RIGHT, 26 }, { INPUT_GAMEPAD_DPAD_RIGHT, 26 },
-            { INPUT_GAMEPAD_DPAD_RIGHT, 26 }, { INPUT_GAMEPAD_DPAD_RIGHT, 30 },
-            { INPUT_GAMEPAD_LEFT_SHOULDER, 4 }, { INPUT_GAMEPAD_LEFT_SHOULDER, 4 },     /* home */
-            { INPUT_GAMEPAD_LEFT_SHOULDER, 28 },
-            { INPUT_GAMEPAD_DPAD_UP, 30 },                                        /* on Start streaming again */
+            { INPUT_GAMEPAD_DPAD_RIGHT, 26 }, { INPUT_GAMEPAD_DPAD_RIGHT, 60 },   /* the last beat: held, then out */
         };
-        tour_menu(dir, menus, sizeof menus / sizeof menus[0], 16, 20, &frame, &written);
+        tour_menu(dir, menus, sizeof menus / sizeof menus[0], 16, 28, &frame, &written);
         printf("%d frames\n", written);
         return 0;
     }
