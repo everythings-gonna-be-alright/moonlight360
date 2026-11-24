@@ -9,8 +9,27 @@ bool gfx_init(void);
 void gfx_shutdown(void);
 /* Starts a frame on a target of width x height pixels. */
 void gfx_frame_begin(uint32_t width, uint32_t height);
+/* Draws the shapes queued so far. Text drawn through gfx does it itself; call it before the resolve and before
+ * drawing anything not through gfx over shapes. */
+void gfx_flush(void);
 /* After the frame's resolve: the GPU work that reads this frame's shapes. */
 void gfx_frame_end(void);
+/* Icon index (icons.h's Icon) from the font's atlas, smooth, in its FONT_ICON_PX square with its top left at (x, y). */
+void gfx_icon(int index, float x, float y, uint32_t argb);
+/* Until gfx_scale_end, everything is drawn scale times its size about (origin_x, origin_y): shapes, images' places and
+ * text, scale-1 text in a font of its own at 80% so it stays sharp (the only scale it has, 0.8). Positions and
+ * gfx_text_width stay in the caller's unscaled units. */
+void gfx_scale_begin(float scale, float origin_x, float origin_y);
+/* The same, and moved: a point p is drawn at to + (p - from) * scale. gfx_scale_end ends either. */
+void gfx_transform_begin(float scale, float from_x, float from_y, float to_x, float to_y);
+void gfx_scale_end(void);
+/* An image in GPU memory (RGBA bytes, row after row), drawn with gfx_image. */
+typedef struct GfxImage GfxImage;
+GfxImage *gfx_image_create(const uint8_t *rgba, int width, int height);
+/* Waits for the GPU to be done with it first. */
+void gfx_image_free(GfxImage *image);
+/* The image stretched over (x, y, w, h), its colours times argb's (0xFFFFFFFF as it is; lower alpha fades it). */
+void gfx_image(const GfxImage *image, float x, float y, float w, float h, uint32_t argb);
 /* Frames since start, for animation. */
 uint32_t gfx_frame(void);
 

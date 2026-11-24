@@ -18,6 +18,10 @@ apply_patch /work/third_party/moonlight-tv/core/moonlight-common-c \
   /work/patches/moonlight-common-c-mbedtls3-cbc-padding.patch
 apply_patch /work/third_party/moonlight-tv/core/moonlight-common-c \
   /work/patches/moonlight-common-c-sdp-options.patch
+# MPEG-2 (and H.263+) negotiation, a Sunshine protocol extension: ReenigneArcher/moonlight-common-c ed6b2da ported to
+# this version, plus LiPreferLegacyVideoFormats.
+apply_patch /work/third_party/moonlight-tv/core/moonlight-common-c \
+  /work/patches/moonlight-common-c-legacy-codecs.patch
 make -C /work/third_party/xsdk TOOLCHAIN=/opt/xsdk-gcc/bin/powerpc-xsdk-elf- build/host/libxsc.so >/dev/null
 cmake -S /work/app -B /work/build/app -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE=/work/third_party/xsdk/cmake/xsdk.cmake -DXSDK_TOOLCHAIN=/opt/xsdk-gcc \

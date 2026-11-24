@@ -16,6 +16,11 @@
 #include "gfx.h"
 #include "menu.h"
 #include "overlay.h"
+#include "uisound.h"
+#include "discover.h"
+#include "coverart.h"
+#include "logbuf.h"
+#include "xsdk/texture.h"
 #include "perf.h"
 #include "ui.h"
 
@@ -66,8 +71,31 @@ void xsdk_gpu_set_vertices(uint32_t stream, uint32_t address, uint32_t size_byte
 }
 NTSTATUS xsdk_shader_load(XsdkShader *shader, const void *container, uint32_t bytes) { (void)shader, (void)container, (void)bytes; return 0; }
 void xsdk_shader_free(XsdkShader *shader) { (void)shader; }
-NTSTATUS xsdk_shader_set_vertex_layout(XsdkShader *s, const XsdkVertexElement *e, uint32_t c, const uint32_t *st) { (void)s, (void)e, (void)c, (void)st; return 0; }
-void xsdk_gpu_set_shaders(const XsdkShader *vertex, const XsdkShader *pixel) { (void)vertex, (void)pixel; }
+/* A shader keeps its vertex stride, so a draw knows whether it's shapes (48 bytes a corner) or glyphs (32). */
+NTSTATUS xsdk_shader_set_vertex_layout(XsdkShader *s, const XsdkVertexElement *e, uint32_t c, const uint32_t *st) { (void)e, (void)c; s->x = st[0]; return 0; }
+static const XsdkShader *current_vertex_shader;
+void xsdk_gpu_set_shaders(const XsdkShader *vertex, const XsdkShader *pixel) { (void)pixel; current_vertex_shader = vertex; }
+
+static const XsdkTexture *current_texture;
+NTSTATUS xsdk_texture_create(XsdkTexture *t, uint32_t format, uint32_t width, uint32_t height, uint32_t levels, bool tiled)
+{
+    (void)levels, (void)tiled;
+    t->width = width;
+    t->height = height;
+    t->format = format;
+    t->texels = calloc(width * (format == XSDK_FORMAT_R8G8B8A8 ? 4 : 1), height);
+    return t->texels ? 0 : -1;
+}
+void xsdk_texture_upload(XsdkTexture *t, uint32_t level, const void *data, uint32_t row_bytes)
+{
+    (void)level;
+    const uint32_t bpp = t->format == XSDK_FORMAT_R8G8B8A8 ? 4 : 1;
+    for (uint32_t row = 0; row < t->height; row++)
+        memcpy(t->texels + row * t->width * bpp, (const uint8_t *)data + row * row_bytes, t->width * bpp);
+}
+void xsdk_texture_free(XsdkTexture *t) { free(t->texels); t->texels = NULL; }
+void xsdk_texture_sampler_state(XsdkSamplerState *state, const XsdkSampler *sampler) { (void)state, (void)sampler; }
+void xsdk_gpu_set_texture(uint32_t slot, const XsdkTexture *t, const XsdkSamplerState *s) { (void)slot, (void)s; current_texture = t; }
 void xsdk_built_shader_set_literals(const XsdkBuiltShader *built) { (void)built; }
 
 static float word_float(uint32_t w)
@@ -78,11 +106,9 @@ static float word_float(uint32_t w)
 
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 
-/* The strip gfx.c writes: corners top left, top right, bottom left, bottom right; shape.frag per pixel. */
-void xsdk_gpu_draw(uint32_t primitive_type, uint32_t vertex_count)
+/* A shape's four corners as gfx.c writes them: top left, top right, bottom left, bottom right; shape.frag per pixel. */
+static void draw_shape(const volatile uint32_t *v)
 {
-    (void)primitive_type, (void)vertex_count;
-    const volatile uint32_t *v = ring + (vertices_address - RING_BASE) / 4;
     float c[4][12];
     for (int i = 0; i < 4; i++)
         for (int k = 0; k < 12; k++)
@@ -104,6 +130,55 @@ void xsdk_gpu_draw(uint32_t primitive_type, uint32_t vertex_count)
             const float coverage = clampf(0.5f - d * inv, 0.0f, 1.0f);
             blend_pixel(x, y, col[0], col[1], col[2], col[3] * coverage);
         }
+    }
+}
+
+void xsdk_gpu_draw(uint32_t primitive_type, uint32_t vertex_count)
+{
+    (void)primitive_type, (void)vertex_count;
+    draw_shape(ring + (vertices_address - RING_BASE) / 4);
+}
+
+/* A glyph: four corners of position, colour and atlas coordinate (8 words each); the atlas sampled at each pixel's
+ * centre, as the GPU does it 1:1. */
+static void draw_glyph(const volatile uint32_t *v)
+{
+    float c[4][8];
+    for (int i = 0; i < 4; i++)
+        for (int k = 0; k < 8; k++)
+            c[i][k] = word_float(v[i * 8 + k]);
+    const float x0 = c[0][0], y0 = c[0][1], x1 = c[3][0], y1 = c[3][1];
+    const XsdkTexture *t = current_texture;
+    for (int y = (int)ceilf(y0); y < y1; y++) {
+        const float vv = c[0][7] + (y - y0) / (y1 - y0) * (c[3][7] - c[0][7]);
+        const int ty = (int)(vv * t->height);
+        for (int x = (int)ceilf(x0); x < x1; x++) {
+            const float uu = c[0][6] + (x - x0) / (x1 - x0) * (c[3][6] - c[0][6]);
+            const int tx = (int)(uu * t->width);
+            if (tx < 0 || ty < 0 || tx >= (int)t->width || ty >= (int)t->height)
+                continue;
+            if (t->format == XSDK_FORMAT_R8G8B8A8) {   /* an image: its colour times the tint */
+                const uint8_t *px = &t->texels[(ty * t->width + tx) * 4];
+                blend_pixel(x, y, c[0][2] * px[0] / 255.0f, c[0][3] * px[1] / 255.0f, c[0][4] * px[2] / 255.0f,
+                            c[0][5] * px[3] / 255.0f);
+            } else {
+                blend_pixel(x, y, c[0][2], c[0][3], c[0][4], c[0][5] * t->texels[ty * t->width + tx] / 255.0f);
+            }
+        }
+    }
+}
+
+/* gfx.c's batches: six indices, two triangles, a quad of four corners each: shapes (48 words) or glyphs (32). */
+void xsdk_gpu_draw_indexed(uint32_t primitive_type, uint32_t index_address, uint32_t index_count, bool indices_32_bit)
+{
+    (void)primitive_type, (void)index_address, (void)indices_32_bit;
+    const bool glyphs = current_vertex_shader && current_vertex_shader->x == 32;
+    for (uint32_t q = 0; q < index_count / 6; q++) {
+        const volatile uint32_t *v = ring + (vertices_address - RING_BASE) / 4;
+        if (glyphs)
+            draw_glyph(v + q * 32);
+        else
+            draw_shape(v + q * 48);
     }
 }
 
@@ -173,6 +248,38 @@ void xsdk_text_measure(const char *utf8, uint32_t scale, uint32_t *width, uint32
     *height = lines * 20 * scale;
 }
 
+void uisound_play(UiSound sound) { (void)sound; }
+/* Two PCs found, the search two thirds through. */
+void discover_start(void) {}
+bool discover_running(void) { return true; }
+void discover_progress(int *tried, int *total) { *tried = 170; *total = 254; }
+int discover_count(void) { return 2; }
+void discover_get(int i, char *address, size_t address_size, char *name, size_t name_size)
+{
+    snprintf(address, address_size, "%s", i == 0 ? "192.168.1.100" : "192.168.1.57");
+    snprintf(name, name_size, "%s", i == 0 ? "GAMING-PC" : "living-room");
+}
+void discover_stop(void) {}
+size_t logbuf_recent(char *out, size_t size)
+{
+    return (size_t)snprintf(out, size, "%s",
+        "2026-11-24 01:41:07.137 [I] Moonlight 360 starting (build Nov 24 2026 01:30:00)\n"
+        "2026-11-24 01:41:14.274 display: 1280x720 scaled to the 1920x1080 output\n"
+        "2026-11-24 01:41:21.411 [I] perf: temperatures CPU 74.8, GPU 71.5, eDRAM 66.8, board 44.1 C\n"
+        "2026-11-24 01:41:28.548 [I] apps: covers: 7 kept, 0 fetched, 0 missing\n"
+        "2026-11-24 01:41:35.685 [I] host 192.168.1.35, app \"Desktop\", 1920x1080 60 fps 20000 kbps\n"
+        "2026-11-24 01:41:42.822 [I] session: Contacting 192.168.1.35...\n"
+        "2026-11-24 01:41:49.959 [I] session: Starting \"Desktop\" at 1920x1080 60 fps, 20000 kbps...\n"
+        "2026-11-24 01:41:56.096 [I] common-c: Starting RTSP handshake...done\n"
+        "2026-11-24 01:41:03.233 [I] video: H.264 1920x1080@60, 6 decode threads at priority 0, 24 slices asked, deblocking on\n"
+        "2026-11-24 01:42:10.370 [I] session: Streaming\n"
+        "2026-11-24 01:42:17.507 [I] stats: decode 60 fps (11.8 ms)  shown 60 fps  dropped 1  errors 0  audio gaps 0  CAVLC lean  ping 1 ms\n"
+        "2026-11-24 01:42:24.644 [W] video: decode unit queue overflow: 3 frames dropped\n"
+        "2026-11-24 01:42:31.781 [I] stats: latency 37 ms = PC 5 + net 4 + decode 12 + display 16\n"
+        "2026-11-24 01:42:38.918 [E] session: stage RTSP handshake failed: -1\n"
+        "2026-11-24 01:42:45.055 [I] session: Disconnected.\n");
+}
+
 /* ---- keyboard, config and app list stand-ins ---- */
 
 uint32_t xsdk_xam_keyboard(uint32_t user, const uint16_t *t, const uint16_t *d, const uint16_t *def, uint16_t *text,
@@ -183,6 +290,14 @@ uint32_t xsdk_xam_keyboard(uint32_t user, const uint16_t *t, const uint16_t *d, 
 }
 uint32_t xsdk_xam_wait(XAM_OVERLAPPED *o, uint32_t timeout_ms, uint32_t *result) { (void)o, (void)timeout_ms, (void)result; return ERROR_SUCCESS; }
 bool config_save(const char *path, const Config *config) { (void)path, (void)config; return true; }
+void config_remove_recent(Config *c, int i)
+{
+    for (int k = i; k < CONFIG_RECENT - 1; k++) {
+        c->recent_id[k] = c->recent_id[k + 1];
+        memcpy(c->recent_name[k], c->recent_name[k + 1], sizeof c->recent_name[k]);
+    }
+    c->recent_name[CONFIG_RECENT - 1][0] = 0;
+}
 
 static const char *const fake_apps[] = { "Desktop", "Steam Big Picture", "Hades II", "Forza Horizon 5",
                                          "Elden Ring", "Stardew Valley", "Hollow Knight", "Balatro" };
@@ -195,6 +310,32 @@ void apps_get(int i, char *name, size_t size, bool *running)
 {
     snprintf(name, size, "%s", fake_apps[i]);
     *running = i == 2;
+}
+unsigned apps_generation(void) { return 1; }
+int apps_id(int i) { return i + 1; }
+/* The Play tab's covers: the stand-in covers by id (app i + 1). */
+const uint8_t *apps_cover(int i);
+const uint8_t *coverart_get(const char *host, int id) { (void)host; return apps_cover(id - 1); }
+unsigned coverart_generation(void) { return 1; }
+/* Stand-in covers: a dark gradient in a hue of its own, a lighter band and a "title" bar; Elden Ring (4) has none,
+ * to show the initial instead. */
+const uint8_t *apps_cover(int i)
+{
+    static uint8_t covers[8][APPS_COVER_W * APPS_COVER_H * 4];
+    static const uint8_t hues[8][3] = { { 40, 90, 200 }, { 30, 60, 110 }, { 200, 60, 40 }, { 230, 120, 30 },
+                                        { 0, 0, 0 },     { 80, 170, 70 }, { 70, 80, 140 }, { 170, 40, 90 } };
+    if (i < 0 || i >= 8 || i == 4)
+        return NULL;
+    uint8_t *c = covers[i];
+    for (int y = 0; y < APPS_COVER_H; y++)
+        for (int x = 0; x < APPS_COVER_W; x++) {
+            const float t = 0.35f + 0.65f * (1.0f - (float)y / APPS_COVER_H);
+            const bool band = (x + y) % 90 < 30, bar = y > 170 && y < 200 && x > 24 && x < 168;
+            for (int k = 0; k < 3; k++)
+                c[(y * APPS_COVER_W + x) * 4 + k] = bar ? 235 : (uint8_t)(hues[i][k] * t * (band ? 1.15f : 0.85f));
+            c[(y * APPS_COVER_W + x) * 4 + 3] = 255;
+        }
+    return c;
 }
 
 /* Sample readings, as the console might show mid-stream. */
@@ -209,6 +350,7 @@ void perf_get(PerfReadings *out)
 
 static void write_png(const char *path)
 {
+    gfx_flush();
     const size_t row = 1 + W * 3;
     unsigned char *raw = malloc(row * H);
     for (int y = 0; y < H; y++) {
@@ -255,9 +397,9 @@ static void clear(void)
     for (int y = 0; y < H; y++)
         for (int x = 0; x < W; x++)
         {
-            fb[y][x][0] = 0x0C / 255.0f;   /* the resolve's clear colour, main.c CLEAR_ARGB */
-            fb[y][x][1] = 0x10 / 255.0f;
-            fb[y][x][2] = 0x16 / 255.0f;
+            fb[y][x][0] = 0x0E / 255.0f;   /* the resolve's clear colour, main.c CLEAR_ARGB */
+            fb[y][x][1] = 0x0E / 255.0f;
+            fb[y][x][2] = 0x10 / 255.0f;
         }
 }
 
@@ -285,13 +427,75 @@ static void shot_menu(const char *dir, const char *name)
 }
 
 /* A stand-in for a game frame under the stream menu. */
+/* A stand-in for the game behind the stats HUD: a night sky over ranges of hills, each range nearer and darker. */
+static float ridge(float x, int layer)
+{
+    const float f = 0.0021f * (1.0f + 0.55f * (float)layer), phase = 1.7f * (float)layer;
+    return 0.50f * sinf(x * f + phase) + 0.30f * sinf(x * f * 2.3f + phase * 2.1f) +
+           0.14f * sinf(x * f * 5.1f + phase * 0.7f) + 0.06f * sinf(x * f * 11.0f + phase * 3.3f);
+}
+
+static float smooth(float edge0, float edge1, float v)
+{
+    const float t = v <= edge0 ? 0.0f : v >= edge1 ? 1.0f : (v - edge0) / (edge1 - edge0);
+    return t * t * (3.0f - 2.0f * t);
+}
+
 static void fake_game(void)
 {
+    static const float zenith[3] = { 0.020f, 0.027f, 0.066f }, horizon[3] = { 0.150f, 0.135f, 0.215f };
+    static const float glow[3] = { 0.62f, 0.33f, 0.16f }, moon[3] = { 0.96f, 0.93f, 0.84f };
+    static const float haze[3] = { 0.105f, 0.105f, 0.175f }, near[3] = { 0.012f, 0.014f, 0.026f };
+    enum { LAYERS = 4, HORIZON_Y = 470, MOON_X = 968, MOON_Y = 178, MOON_R = 46 };
     for (int y = 0; y < H; y++)
         for (int x = 0; x < W; x++) {
-            fb[y][x][0] = 0.25f + 0.35f * (float)x / W;
-            fb[y][x][1] = 0.35f + 0.25f * sinf((float)y / 90.0f);
-            fb[y][x][2] = 0.20f + 0.30f * (float)(W - x) / W;
+            float c[3];
+            /* The sky: dark overhead, lighter toward the horizon, with a low warm glow where the day went down. */
+            const float down = smooth(0.0f, (float)HORIZON_Y, (float)y);
+            const float gx = ((float)x - 430.0f) / 520.0f, gy = ((float)y - (float)HORIZON_Y) / 150.0f;
+            const float warm = 0.55f * expf(-(gx * gx + gy * gy));
+            for (int k = 0; k < 3; k++)
+                c[k] = zenith[k] + (horizon[k] - zenith[k]) * down * down + glow[k] * warm;
+            /* Stars, fewer and fainter toward the horizon: one in some cells of a grid, placed by a hash. */
+            const int cell_x = x / 26, cell_y = y / 26;
+            uint32_t hash = (uint32_t)cell_x * 374761393u + (uint32_t)cell_y * 668265263u;
+            hash = (hash ^ (hash >> 13)) * 1274126177u;
+            hash ^= hash >> 16;
+            if ((hash & 7) < 3) {
+                const float sx = (float)(cell_x * 26) + 3.0f + (float)((hash >> 8) % 20);
+                const float sy = (float)(cell_y * 26) + 3.0f + (float)((hash >> 14) % 20);
+                const float d2 = ((float)x - sx) * ((float)x - sx) + ((float)y - sy) * ((float)y - sy);
+                const float bright = (0.25f + 0.75f * (float)((hash >> 20) % 100) / 100.0f) * (1.0f - down);
+                const float star = bright * expf(-d2 / (0.45f + 0.5f * (float)((hash >> 4) & 1)));
+                for (int k = 0; k < 3; k++)
+                    c[k] += star * (k == 2 ? 1.0f : 0.92f);
+            }
+            /* The moon and its halo. */
+            const float md = sqrtf(((float)x - MOON_X) * ((float)x - MOON_X) + ((float)y - MOON_Y) * ((float)y - MOON_Y));
+            const float disc = 1.0f - smooth((float)MOON_R - 1.0f, (float)MOON_R + 1.0f, md);
+            const float halo = 0.16f * expf(-md / 95.0f) + 0.05f * expf(-md / 320.0f);
+            for (int k = 0; k < 3; k++)
+                c[k] = c[k] * (1.0f - disc) + moon[k] * disc + moon[k] * halo * (1.0f - disc);
+            /* The hills, far to near: each range a little lower on the screen, taller and darker than the last. */
+            for (int layer = 0; layer < LAYERS; layer++) {
+                const float t = (float)layer / (float)(LAYERS - 1);
+                const float top = (float)HORIZON_Y - 26.0f + 62.0f * (float)layer -
+                                  (34.0f + 30.0f * t) * ridge((float)x + 400.0f * (float)layer, layer);
+                const float cover = smooth(top - 1.0f, top + 1.0f, (float)y);
+                const float depth = smooth(top, top + 220.0f, (float)y);   /* mist thins down the slope */
+                for (int k = 0; k < 3; k++) {
+                    const float crest = haze[k] + (near[k] - haze[k]) * t + glow[k] * warm * 0.22f * (1.0f - t);
+                    const float hill = crest + (near[k] - crest) * depth * (0.45f + 0.55f * t);
+                    c[k] = c[k] * (1.0f - cover) + hill * cover;
+                }
+            }
+            /* Darker toward the corners. */
+            const float vx = ((float)x - W / 2.0f) / (W / 2.0f), vy = ((float)y - H / 2.0f) / (H / 2.0f);
+            const float vignette = 1.0f - 0.22f * (vx * vx + vy * vy);
+            for (int k = 0; k < 3; k++) {
+                const float v = c[k] * vignette;
+                fb[y][x][k] = v < 0.0f ? 0.0f : v > 1.0f ? 1.0f : v;
+            }
         }
 }
 
@@ -299,29 +503,129 @@ int main(int argc, char **argv)
 {
     const char *dir = argc > 1 ? argv[1] : ".";
     gfx_init();
-    static Config config = { .host = "192.168.1.100", .app = "Desktop", .width = 1280, .height = 720, .fps = 30,
-                             .bitrate_kbps = 8000, .fast_decode = true, .decode = true, .draw = true,
-                             .audio_packet_ms = 20, .packet_size = 1392 };
+    if (argc > 3 && !strcmp(argv[2], "moon")) {
+        /* The Play tab's sky over time: every third frame (20 a second) of argv[3] seconds, as moon-NNNN.png. */
+        static Config sky = { .host = "192.168.1.100", .app = "Desktop", .width = 1280, .height = 720, .fps = 30,
+                              .bitrate_kbps = 8000, .decode = true, .draw = true, .audio_packet_ms = 20,
+                              .packet_size = 1392, .slices = 6 };
+        menu_open(&sky, "moonlight.ini");
+        const int frames = atoi(argv[3]) * 60;
+        for (int f = 0; f < frames; f++) {
+            if (f % 3) {
+                gfx_frame_begin(W, H);
+                menu_draw(W, H);   /* the scene keeps its own time and events */
+                continue;
+            }
+            char name[32];
+            snprintf(name, sizeof name, "moon-%04d", f / 3);
+            shot_menu(dir, name);
+        }
+        return 0;
+    }
+    static Config config = { .host = "192.168.1.100", .app = "Desktop", .width = 1920, .height = 1080, .fps = 60,
+                             .bitrate_kbps = 20000, .fast_decode = false, .decode = true, .draw = true,
+                             .audio_packet_ms = 20, .packet_size = 1392, .slices = 24, .app_id = 3,
+                             .recent_id = { 3, 4, 1, 6 }, .show_recent = true,
+                             .recent_name = { "Hades II", "Forza Horizon 5", "Desktop", "Stardew Valley" } };
+    snprintf(config.app, sizeof config.app, "Hades II");
     menu_open(&config, "moonlight.ini");
     shot_menu(dir, "1-play");
     press(INPUT_GAMEPAD_DPAD_DOWN);
     shot_menu(dir, "2-play-app");
+    press(INPUT_GAMEPAD_DPAD_DOWN);    /* Host PC */
+    press(INPUT_GAMEPAD_DPAD_DOWN);    /* onto Recent */
+    press(INPUT_GAMEPAD_DPAD_RIGHT);
+    for (int i = 0; i < 20; i++) {   /* the ring settles */
+        gfx_frame_begin(W, H);
+        menu_draw(W, H);
+    }
+    shot_menu(dir, "2b-play-recent");
+    press(INPUT_GAMEPAD_DPAD_UP);      /* back to Host PC */
+    press(INPUT_GAMEPAD_DPAD_UP);      /* App */
     menu_set_message("Could not reach Sunshine at 192.168.1.100:\ncURL error: Could not connect to server (-5)\n"
                      "Check the Host PC setting.");
     shot_menu(dir, "3-play-error");
+    menu_set_message("No app named \"Elden Ring\" on the host.\nApps: Desktop, Steam Big Picture, Hades II, Forza "
+                     "Horizon 5, Stardew Valley, Hollow Knight, Balatro, Cyberpunk 2077, Baldur's Gate 3, Red Dead "
+                     "Redemption 2, The Witcher 3, Celeste, Dead Cells, Hollow Knight Silksong, Sea of Thieves\n"
+                     "Change the App setting.");
+    shot_menu(dir, "3b-play-error-long");
     menu_set_message(NULL);
     press(INPUT_GAMEPAD_RIGHT_SHOULDER);
     press(INPUT_GAMEPAD_DPAD_DOWN);
     press(INPUT_GAMEPAD_DPAD_DOWN);
+    for (int i = 0; i < 12; i++) {   /* past the tab's fade */
+        gfx_frame_begin(W, H);
+        menu_draw(W, H);
+    }
     shot_menu(dir, "4-video");
+    press(INPUT_GAMEPAD_DPAD_UP);   /* Frame rate, at 1080p and 60 fps: the lean-stream notice */
+    shot_menu(dir, "4b-video-warning");
+    press(INPUT_GAMEPAD_DPAD_DOWN);
+    press(INPUT_GAMEPAD_DPAD_DOWN);
+    press(INPUT_GAMEPAD_DPAD_DOWN);
+    press(INPUT_GAMEPAD_DPAD_DOWN);
+    press(INPUT_GAMEPAD_DPAD_DOWN);   /* Stats */
+    press(INPUT_GAMEPAD_Y);   /* details on */
+    shot_menu(dir, "4c-video-stats-details");
+    press(INPUT_GAMEPAD_DPAD_DOWN);
+    press(INPUT_GAMEPAD_DPAD_DOWN);   /* Stats size, the last row: the tab scrolls */
+    for (int i = 0; i < 20; i++) {
+        gfx_frame_begin(W, H);
+        menu_draw(W, H);
+    }
+    shot_menu(dir, "4d-video-scrolled");
+    press(INPUT_GAMEPAD_DPAD_UP);
+    press(INPUT_GAMEPAD_DPAD_UP);
     press(INPUT_GAMEPAD_RIGHT_SHOULDER);
     press(INPUT_GAMEPAD_DPAD_DOWN);
     shot_menu(dir, "5-network");
     press(INPUT_GAMEPAD_RIGHT_SHOULDER);
-    press(INPUT_GAMEPAD_RIGHT_SHOULDER);   /* back to Play, App still selected */
+    press(INPUT_GAMEPAD_DPAD_UP);   /* Logging, the last row */
+    for (int i = 0; i < 12; i++) {   /* past the tab's fade */
+        gfx_frame_begin(W, H);
+        menu_draw(W, H);
+    }
+    shot_menu(dir, "5b-other");
+    press(INPUT_GAMEPAD_DPAD_UP);      /* up from Logging to Theme */
+    press(INPUT_GAMEPAD_DPAD_UP);
+    press(INPUT_GAMEPAD_DPAD_RIGHT);   /* Blue */
+    for (int i = 0; i < 12; i++) {
+        gfx_frame_begin(W, H);
+        menu_draw(W, H);
+    }
+    shot_menu(dir, "5d-theme-blue");
+    press(INPUT_GAMEPAD_DPAD_LEFT);    /* back to Orange */
+    press(INPUT_GAMEPAD_DPAD_DOWN);    /* and down to Logging */
+    press(INPUT_GAMEPAD_DPAD_DOWN);
+    press(INPUT_GAMEPAD_RIGHT_SHOULDER);
+    for (int i = 0; i < 12; i++) {   /* past the tab's fade */
+        gfx_frame_begin(W, H);
+        menu_draw(W, H);
+    }
+    shot_menu(dir, "5c-about");
+    config.logging = true;
+    press(INPUT_GAMEPAD_Y);   /* the log */
+    shot_menu(dir, "5e-about-log");
+    press(INPUT_GAMEPAD_Y);
+    config.logging = false;
+    press(INPUT_GAMEPAD_RIGHT_SHOULDER);   /* back to Play */
+    press(INPUT_GAMEPAD_DPAD_DOWN);        /* Host PC */
+    press(INPUT_GAMEPAD_A);                /* the finder */
+    for (int i = 0; i < 12; i++) {
+        gfx_frame_begin(W, H);
+        menu_draw(W, H);
+    }
+    shot_menu(dir, "6b-finder");
+    press(INPUT_GAMEPAD_B);
+    press(INPUT_GAMEPAD_DPAD_UP);          /* App again */
     press(INPUT_GAMEPAD_A);                /* the picker */
-    press(INPUT_GAMEPAD_DPAD_DOWN);
-    press(INPUT_GAMEPAD_DPAD_DOWN);
+    press(INPUT_GAMEPAD_DPAD_RIGHT);
+    press(INPUT_GAMEPAD_DPAD_RIGHT);
+    for (int i = 0; i < 12; i++) {   /* covers made, the row settled */
+        gfx_frame_begin(W, H);
+        menu_draw(W, H);
+    }
     shot_menu(dir, "6-picker");
     press(INPUT_GAMEPAD_B);
 
@@ -337,7 +641,14 @@ int main(int argc, char **argv)
 
     clear();
     gfx_frame_begin(W, H);
-    ui_draw_status(W, H, "Connecting", "Connecting: RTSP handshake...", NULL, true);
+    static const char *const steps[] = { "Reach PC", "Pair", "Start app", "Stream", "Picture" };
+    for (int i = 0; i < 40; i++) {   /* the track's fill slides into place */
+        clear();
+        gfx_frame_begin(W, H);
+        ui_draw_progress(W, H, "Desktop",
+                         "on 192.168.1.100  \xC2\xB7  1920x1080  \xC2\xB7  60 fps  \xC2\xB7  20 Mbps", steps, 5, 3,
+                         "RTSP handshake...");
+    }
     snprintf(path, sizeof path, "%s/8-connecting.png", dir);
     write_png(path);
 
@@ -347,25 +658,27 @@ int main(int argc, char **argv)
     gfx_frame_begin(W, H);
     PerfReadings perf;
     perf_get(&perf);
-    /* Figures from a real 720p30 session (log 2026-11-23 04:40), and a troubled one. */
-    static NetStats net = { .rtt_ms = 1, .rtt_var_ms = 0, .budget_ms = 1000.0f / 30, .count = NET_HISTORY };
+    /* Figures from a real 1080p60 session with a lean stream, six minutes at 30 Mbit/s (log 2026-11-24 00:04:
+     * 59 fps, latency 40 ms = PC 4 + net 4 + decode 12 + display 20), and a troubled one. */
+    static NetStats net = { .rtt_ms = 1, .rtt_var_ms = 0, .budget_ms = 1000.0f / 60, .count = NET_HISTORY };
     for (int i = 0; i < NET_HISTORY; i++)
-        net.interval_ms[i] = 1000.0f / 30 + (float)((i * 37) % 7) - 3.0f;
-    const HudStats hud = { .ready = true, .fps = 30, .target_fps = 30, .width = 1280, .height = 720, .cabac = 0,
-                           .fast_decode = true, .host_ms = 2, .net_ms = 5, .decode_ms = 18, .display_ms = 14 };
+        net.interval_ms[i] = 1000.0f / 60 + (float)((i * 37) % 5) - 2.0f;
+    const HudStats hud = { .ready = true, .fps = 59, .target_fps = 60, .width = 1920, .height = 1080, .cabac = 0,
+                           .stream_kind = STREAM_LEAN, .host_ms = 4, .net_ms = 4, .decode_ms = 12,
+                           .display_ms = 20 };
     static HudHistory hist = { .latency_count = HUD_HISTORY, .load_count = HUD_HISTORY };
     for (int i = 0; i < HUD_HISTORY; i++) {
         const float wobble = (float)((i * 29) % 9) - 4.0f;
-        hist.latency[i][0] = 2.0f;
-        hist.latency[i][1] = 5.0f + (i % 13 == 0 ? 3.0f : 0.0f);
-        hist.latency[i][2] = 18.0f + wobble;
-        hist.latency[i][3] = 14.0f + (float)((i * 7) % 5);
+        hist.latency[i][0] = 4.0f;
+        hist.latency[i][1] = 4.0f + (i % 13 == 0 ? 3.0f : 0.0f);
+        hist.latency[i][2] = 12.0f + wobble * 0.5f;
+        hist.latency[i][3] = 18.0f + (float)((i * 7) % 5);
         hist.cpu[i] = (uint8_t)(62 + (i * 13) % 9);
         hist.cpu_peak[i] = (uint8_t)(88 + (i * 5) % 8);
         hist.gpu[i] = (uint8_t)(16 + (i * 11) % 5);
     }
-    hist.latency[64][2] = 34.0f;   /* a slow frame */
-    ui_draw_stats(STATS_COMPACT, &hud, &perf, &net, &hist);
+    hist.latency[64][2] = 24.0f;   /* a slow frame */
+    ui_draw_stats(STATS_COMPACT, HUD_TOP_LEFT, HUD_MEDIUM, &hud, &perf, &net, &hist);
     overlay_draw(W, H, "Desktop", STATS_COMPACT);
     snprintf(path, sizeof path, "%s/9-stream-menu.png", dir);
     write_png(path);
@@ -373,14 +686,14 @@ int main(int argc, char **argv)
     clear();
     fake_game();
     gfx_frame_begin(W, H);
-    ui_draw_stats(STATS_DETAILED, &hud, &perf, &net, &hist);
+    ui_draw_stats(STATS_DETAILED, HUD_TOP_LEFT, HUD_MEDIUM, &hud, &perf, &net, &hist);
     snprintf(path, sizeof path, "%s/10-stats.png", dir);
     write_png(path);
 
     clear();
     fake_game();
     gfx_frame_begin(W, H);
-    ui_draw_stats(STATS_COMPACT, &hud, &perf, &net, &hist);
+    ui_draw_stats(STATS_COMPACT, HUD_TOP_LEFT, HUD_MEDIUM, &hud, &perf, &net, &hist);
     snprintf(path, sizeof path, "%s/11-stats-compact.png", dir);
     write_png(path);
 
@@ -399,13 +712,22 @@ int main(int argc, char **argv)
     clear();
     fake_game();
     gfx_frame_begin(W, H);
-    ui_draw_stats(STATS_DETAILED, &troubled, &perf, &bad, &hist);
+    ui_draw_stats(STATS_DETAILED, HUD_BOTTOM_RIGHT, HUD_SMALL, &troubled, &perf, &bad, &hist);
     snprintf(path, sizeof path, "%s/12-stats-trouble.png", dir);
     write_png(path);
 
     static Config empty = { .app = "Desktop", .width = 1280, .height = 720, .fps = 30, .bitrate_kbps = 8000,
-                            .decode = true, .draw = true, .audio_packet_ms = 20, .packet_size = 1392 };
+                            .decode = true, .draw = true, .audio_packet_ms = 20, .packet_size = 1392, .slices = 24 };
     menu_open(&empty, "moonlight.ini");
     shot_menu(dir, "0-welcome");
+
+    clear();   /* the logo, big and at its real size, for judging it */
+    gfx_frame_begin(W, H);
+    gfx_logo(80.0f, 80.0f, 400.0f);
+    gfx_logo(560.0f, 80.0f, 160.0f);
+    gfx_logo(560.0f, 280.0f, 48.0f);
+    ui_draw_header();
+    snprintf(path, sizeof path, "%s/13-logo.png", dir);
+    write_png(path);
     return 0;
 }

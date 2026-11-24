@@ -2,6 +2,7 @@
 
 #include "config.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -60,7 +61,7 @@ void ui_draw_status(uint32_t width, uint32_t height, const char *title, const ch
     int32_t y = ((int32_t)height - column) / 2;
 
     if (busy && !has_pin) {
-        gfx_spinner((float)cx, (float)y + 32.0f, 26.0f, THEME_ACCENT_TEXT);
+        gfx_spinner((float)cx, (float)y + 32.0f, 26.0f, THEME_ACCENT);
         y += 64 + 28;
     }
     gfx_text_center(cx, y, 2, THEME_TEXT, title);
@@ -73,20 +74,115 @@ void ui_draw_status(uint32_t width, uint32_t height, const char *title, const ch
         const int32_t row_w = digits * PIN_BOX_W + (digits - 1) * PIN_GAP;
         int32_t bx = cx - row_w / 2;
         for (int32_t i = 0; i < digits; i++, bx += PIN_BOX_W + PIN_GAP) {
-            gfx_rect((float)bx, (float)y, PIN_BOX_W, PIN_BOX_H, 16.0f, THEME_BORDER);
-            gfx_rect((float)bx + 1.0f, (float)y + 1.0f, PIN_BOX_W - 2.0f, PIN_BOX_H - 2.0f, 15.0f, THEME_SURFACE);
+            gfx_rect((float)bx, (float)y, PIN_BOX_W, PIN_BOX_H, 16.0f, THEME_ACCENT_SOFT);
+            gfx_rect((float)bx + 2.0f, (float)y + 2.0f, PIN_BOX_W - 4.0f, PIN_BOX_H - 4.0f, 14.0f, THEME_SURFACE);
             const char digit[2] = { pin[i], 0 };
             gfx_text_center(bx + PIN_BOX_W / 2, y + (PIN_BOX_H - 80) / 2, 4, THEME_TEXT, digit);
         }
-        gfx_spinner((float)cx, (float)(y + PIN_BOX_H + 44), 12.0f, THEME_TEXT_3);
+        gfx_spinner((float)cx, (float)(y + PIN_BOX_H + 44), 12.0f, THEME_ACCENT);
     }
 
     static const char *const labels[] = { "Exit" };
     ui_draw_hints("K", labels);
 }
 
+void ui_draw_progress(uint32_t width, uint32_t height, const char *title, const char *subtitle,
+                      const char *const *names, int count, int current, const char *detail)
+{
+    enum { CARD_W = 820, CARD_H = 380, NODE_R = 16, TRACK_H = 4 };
+    ui_draw_background(width, height);
+    ui_draw_header();
+    const uint32_t frame = gfx_frame();
+    const float t = (float)frame / 60.0f;
+
+    /* Time on this connection: from the first frame drawn after a gap (a new connection). */
+    static uint32_t last_frame, started;
+    if (frame - last_frame > 2)
+        started = frame;
+    last_frame = frame;
+
+    const float cx = (float)width / 2.0f, cy = (float)height / 2.0f;
+    const float x = cx - CARD_W / 2.0f, y = cy - CARD_H / 2.0f - 6.0f;
+    gfx_rect(x, y, CARD_W, CARD_H, THEME_RADIUS, THEME_BORDER);
+    gfx_rect(x + 1.0f, y + 1.0f, CARD_W - 2.0f, CARD_H - 2.0f, THEME_RADIUS - 1, THEME_SURFACE);
+
+    /* What's being connected: the app, big, and where and how. */
+    const int32_t left = (int32_t)x + 44;
+    gfx_text(left, (int32_t)y + 34, 1, THEME_ACCENT_TEXT, "CONNECTING");
+    gfx_text(left, (int32_t)y + 58, 3, THEME_TEXT, title);
+    gfx_text(left, (int32_t)y + 124, 1, THEME_TEXT_2, subtitle);
+    char seconds[16];
+    snprintf(seconds, sizeof seconds, "%u s", (unsigned)((frame - started) / 60));
+    gfx_text_right((int32_t)(x + CARD_W) - 44, (int32_t)y + 34, 1, THEME_TEXT_3, seconds);
+
+    /* The steps across the card: a track whose orange part slides on to the step under way. */
+    const float track_y = y + 214.0f;
+    const float first_x = x + 92.0f, span = CARD_W - 184.0f;
+    const float step_w = count > 1 ? span / (float)(count - 1) : 0.0f;
+    static float fill = -1.0f;
+    const float target = step_w * (float)current;
+    fill = fill < 0.0f || target < fill - 1.0f ? target : fill + (target - fill) * 0.12f;
+    gfx_rect(first_x, track_y - TRACK_H / 2.0f, span, TRACK_H, TRACK_H / 2.0f, THEME_TRACK);
+    if (fill > 0.0f)
+        gfx_rect(first_x, track_y - TRACK_H / 2.0f, fill, TRACK_H, TRACK_H / 2.0f, THEME_GOOD);
+    for (int i = 0; i < count; i++) {
+        const float nx = first_x + step_w * (float)i;
+        uint32_t label = THEME_TEXT_3;
+        if (i < current) {
+            gfx_circle(nx, track_y, NODE_R, THEME_GOOD);
+            gfx_text_center((int32_t)nx, (int32_t)track_y - 10, 1, THEME_ON_ACCENT, "\xE2\x9C\x93");   /* U+2713 */
+            label = THEME_TEXT_2;
+        } else if (i == current) {
+            /* A glow that breathes, the ring and a spinner in it. */
+            const float breath = 0.5f + 0.5f * sinf(t * 6.2831853f / 1.6f);
+            gfx_circle(nx, track_y, NODE_R + 6.0f + 4.0f * breath,
+                       (uint32_t)(0x18 + 0x20 * breath) << 24 | (THEME_ACCENT & 0x00FFFFFF));
+            gfx_circle(nx, track_y, NODE_R, THEME_ACCENT);
+            gfx_circle(nx, track_y, NODE_R - 3.0f, THEME_SURFACE);
+            gfx_spinner(nx, track_y, NODE_R - 8.0f, THEME_ACCENT);
+            label = THEME_TEXT;
+        } else {
+            gfx_circle(nx, track_y, NODE_R, THEME_TRACK);
+            gfx_circle(nx, track_y, NODE_R - 3.0f, THEME_SURFACE);
+        }
+        gfx_text_center((int32_t)nx, (int32_t)track_y + NODE_R + 14, 1, label, names[i]);
+    }
+
+    /* What the step under way is doing. */
+    const float dy = y + CARD_H - 76.0f;
+    gfx_rect(x + 32.0f, dy, CARD_W - 64.0f, 48.0f, 12.0f, THEME_ROW_SELECTED);
+    char line[160];
+    gfx_fit(line, sizeof line, detail && detail[0] ? detail : names[current < count ? current : count - 1], 70);
+    gfx_circle(x + 58.0f, dy + 24.0f, 5.0f, THEME_ACCENT);
+    gfx_text(left + 30, (int32_t)dy + 14, 1, THEME_TEXT_2, line);
+
+    static const char *const labels[] = { "Exit" };
+    ui_draw_hints("K", labels);
+}
+
+/* A small "Stand with Ukraine" badge at the right end of the footer: the flag and the words. */
+static const char UKRAINE_TEXT[] = "Stand with Ukraine";
+static const uint32_t UKRAINE_BLUE = 0xFF0057B7, UKRAINE_YELLOW = 0xFFFFD700;
+enum { FLAG_W = 24, FLAG_H = 16, BADGE_GAP = 10 };
+
+static int32_t badge_width(void)
+{
+    return FLAG_W + BADGE_GAP + gfx_text_width(UKRAINE_TEXT, 1);
+}
+
+static void draw_ukraine_badge(void)
+{
+    const float cy = (float)(THEME_FOOTER_Y + 14);
+    const float x = (float)(THEME_RIGHT - badge_width());
+    gfx_rect(x, cy - FLAG_H / 2, FLAG_W, FLAG_H / 2, 0.0f, UKRAINE_BLUE);
+    gfx_rect(x, cy, FLAG_W, FLAG_H / 2, 0.0f, UKRAINE_YELLOW);
+    gfx_text((int32_t)x + FLAG_W + BADGE_GAP, THEME_FOOTER_Y + 4, 1, THEME_TEXT_3, UKRAINE_TEXT);
+}
+
 void ui_draw_hints(const char *buttons, const char *const *labels)
 {
+    draw_ukraine_badge();
+    gfx_rect(THEME_LEFT, THEME_FOOTER_Y - 18, THEME_RIGHT - THEME_LEFT, 1.0f, 0, THEME_DIVIDER);
     int32_t x = THEME_LEFT;
     for (int i = 0; buttons[i]; i++) {
         if (labels[i])
@@ -146,15 +242,17 @@ static float latency_total(const HudStats *h, bool *partial)
     return (h->host_ms > 0 ? h->host_ms : 0.0f) + h->net_ms + h->decode_ms + h->display_ms;
 }
 
+/* Colours out of the enums below: past INT_MAX they would make an enum unsigned (theme.h). */
+static const uint32_t HUD_PANEL = 0xC80C0C0E, LOAD_GRAPH = 0xB0FF7A1A;
+
 enum {
     HUD_X = 12, HUD_Y = 10, HUD_PAD = 12, HUD_ROW = 24, HUD_W = 470,
-    HUD_PANEL = 0xC0080C14,
     NET_GRAPH_W = NET_HISTORY * 2, NET_GRAPH_H = 22,
     LATENCY_SCALE_MS = 100,   /* the latency bar's full width */
 };
 
 /* The latency parts, in the bar and its legend. */
-static const uint32_t part_colours[4] = { 0xFF9D7BFF, 0xFF4A9BFF, 0xFFE8B04A, 0xFF4CC3B0 };
+static const uint32_t part_colours[4] = { 0xFFB3B3B9, 0xFF4A9BFF, 0xFFFF7A1A, 0xFF4CC3B0 };
 static const char *const part_names[4] = { "PC", "net", "dec", "disp" };
 
 /* Text pieces drawn one after another; returns the x after the last. */
@@ -207,30 +305,21 @@ static void draw_arrivals(float gx, float gy, const NetStats *net)
 }
 
 /* One line: health dot, frame rate, latency, ping, loss. */
+typedef struct {
+    char fps[24], lat[24], ping[24], loss[24];
+} CompactText;
+
+/* The compact line's pieces (into p, 7 of them, their text in t); returns its panel's width. */
+static float compact_pieces(const HudStats *h, const NetStats *net, CompactText *t, Piece *p);
+
 static void draw_compact(const HudStats *h, const NetStats *net)
 {
-    char fps[24], lat[24], ping[24], loss[24];
+    CompactText t;
+    Piece p[7];
+    const float w = compact_pieces(h, net, &t, p), hgt = 32.0f;
+    const int n = 7;
     bool partial;
     const float total = latency_total(h, &partial);
-    snprintf(fps, sizeof fps, h->ready ? "%.0f fps" : "-- fps", h->fps);
-    if (total >= 0)
-        snprintf(lat, sizeof lat, "%.0f%s ms", total, partial ? "+" : "");
-    else
-        snprintf(lat, sizeof lat, "-- ms");
-    if (net->rtt_ms >= 0)
-        snprintf(ping, sizeof ping, "ping %d ms", net->rtt_ms);
-    else
-        snprintf(ping, sizeof ping, "ping --");
-    snprintf(loss, sizeof loss, net->loss_pct > 0 ? "loss %.1f%%" : "loss 0%%", net->loss_pct);
-    const uint32_t sep = THEME_TEXT_3;
-    const Piece p[] = {
-        { fps, h->ready ? fps_colour(h) : THEME_TEXT_3 }, { "  \xC2\xB7  ", sep },
-        { lat, total >= 0 ? latency_colour(total) : THEME_TEXT_3 }, { "  \xC2\xB7  ", sep },
-        { ping, net->rtt_ms >= 0 ? ping_colour(net->rtt_ms) : THEME_TEXT_3 }, { "  \xC2\xB7  ", sep },
-        { loss, loss_colour(net->loss_pct) },
-    };
-    const int n = (int)(sizeof p / sizeof p[0]);
-    const float w = (float)(pieces_width(p, n) + 2 * HUD_PAD + 16), hgt = 32.0f;
     gfx_rect(HUD_X, HUD_Y, w, hgt, hgt / 2, HUD_PANEL);
     const uint32_t health = h->ready ? worst(worst(fps_colour(h), loss_colour(net->loss_pct)),
                                              total >= 0 ? latency_colour(total) : THEME_GOOD)
@@ -239,8 +328,36 @@ static void draw_compact(const HudStats *h, const NetStats *net)
     draw_pieces(HUD_X + HUD_PAD + 16, HUD_Y + 6, p, n);
 }
 
+static float compact_pieces(const HudStats *h, const NetStats *net, CompactText *t, Piece *out)
+{
+    char *fps = t->fps, *lat = t->lat, *ping = t->ping, *loss = t->loss;
+    bool partial;
+    const float total = latency_total(h, &partial);
+    snprintf(fps, sizeof t->fps, h->ready ? "%.0f fps" : "-- fps", h->fps);
+    if (total >= 0)
+        snprintf(lat, sizeof t->lat, "%.0f%s ms", total, partial ? "+" : "");
+    else
+        snprintf(lat, sizeof t->lat, "-- ms");
+    if (net->rtt_ms >= 0)
+        snprintf(ping, sizeof t->ping, "ping %d ms", net->rtt_ms);
+    else
+        snprintf(ping, sizeof t->ping, "ping --");
+    snprintf(loss, sizeof t->loss, net->loss_pct > 0 ? "loss %.1f%%" : "loss 0%%", net->loss_pct);
+    const uint32_t sep = THEME_TEXT_3;
+    const Piece p[] = {
+        { fps, h->ready ? fps_colour(h) : THEME_TEXT_3 }, { "  \xC2\xB7  ", sep },
+        { lat, total >= 0 ? latency_colour(total) : THEME_TEXT_3 }, { "  \xC2\xB7  ", sep },
+        { ping, net->rtt_ms >= 0 ? ping_colour(net->rtt_ms) : THEME_TEXT_3 }, { "  \xC2\xB7  ", sep },
+        { loss, loss_colour(net->loss_pct) },
+    };
+    const int n = (int)(sizeof p / sizeof p[0]);
+    for (int i = 0; i < n; i++)
+        out[i] = p[i];
+    return (float)(pieces_width(p, n) + 2 * HUD_PAD + 16);
+}
+
 /* The graphs' common frame, right-aligned on a row. */
-enum { LOAD_GRAPH = 0xB04A9BFF, TEMP_X = 210, GRAPH_W = HUD_HISTORY * 2, GRAPH_H = 22, GRAPH_ROW = 30, LATENCY_GRAPH_H = 44, LATENCY_GRAPH_MS = 80 };
+enum { TEMP_X = 210, GRAPH_W = HUD_HISTORY * 2, GRAPH_H = 22, GRAPH_ROW = 30, LATENCY_GRAPH_H = 44, LATENCY_GRAPH_MS = 80 };
 
 static void graph_back(float gx, float gy, float gh)
 {
@@ -292,12 +409,18 @@ static void draw_load_graph(float gx, float gy, const uint8_t *load, const uint8
 
 /* Headline; then rows of a label and value on the left and a graph on the right: latency (with its parts' legend
  * under it), network, CPU, GPU; and any trouble of the last five seconds. */
+/* The detailed panel's height: one more row while there's trouble to list. */
+static float detailed_height(const HudStats *h)
+{
+    const bool trouble = h->dropped || h->errors || h->audio_gaps;
+    return (float)(2 * HUD_PAD + HUD_ROW + 4 + (LATENCY_GRAPH_H + 10) + 3 * GRAPH_ROW + (trouble ? HUD_ROW : 0) - 6);
+}
+
 static void draw_detailed(const HudStats *h, const PerfReadings *perf, const NetStats *net, const HudHistory *hist)
 {
     char text[128], a[32], b[32], c[32];
     const bool trouble = h->dropped || h->errors || h->audio_gaps;
-    const float panel_h = (float)(2 * HUD_PAD + HUD_ROW + 4 + (LATENCY_GRAPH_H + 10) + 3 * GRAPH_ROW +
-                                  (trouble ? HUD_ROW : 0) - 6);
+    const float panel_h = detailed_height(h);
     gfx_rect(HUD_X, HUD_Y, HUD_W + 2 * HUD_PAD, panel_h, 10.0f, HUD_PANEL);
     const int32_t x = HUD_X + HUD_PAD, right = x + HUD_W;
     const float gx = (float)(right - GRAPH_W);
@@ -314,8 +437,10 @@ static void draw_detailed(const HudStats *h, const PerfReadings *perf, const Net
     snprintf(b, sizeof b, " of %.0f fps", h->target_fps);
     const Piece head[] = { { a, h->ready ? fps_colour(h) : THEME_TEXT_3 }, { b, THEME_TEXT_2 } };
     draw_pieces(x + 18, y, head, 2);
-    snprintf(text, sizeof text, "%dp%s%s%s", h->height, h->cabac < 0 ? "" : h->cabac ? "  CABAC" : "  CAVLC",
-             h->fast_decode ? "  fast" : "", h->gpu_decode ? "  GPU" : "");
+    snprintf(text, sizeof text, "%dp%s%s%s", h->height,
+             h->mpeg2 ? "  MPEG-2" : h->cabac < 0 ? "" : h->cabac ? "  CABAC" : "  CAVLC",
+             h->stream_kind == STREAM_LEAN ? " lean" : h->stream_kind == STREAM_NO_DEBLOCK ? " no-deblock" : "",
+             h->fast_decode ? "  fast" : "");
     gfx_text_right(right, y, 1, THEME_TEXT_3, text);
     y += HUD_ROW + 4;
 
@@ -407,13 +532,35 @@ static void draw_detailed(const HudStats *h, const PerfReadings *perf, const Net
     }
 }
 
-void ui_draw_stats(int mode, const HudStats *hud, const PerfReadings *perf, const NetStats *net,
+void ui_draw_stats(int mode, int corner, int size, const HudStats *hud, const PerfReadings *perf, const NetStats *net,
                    const HudHistory *history)
 {
+    if (mode != STATS_COMPACT && mode != STATS_DETAILED)
+        return;
+    /* Its size (70, 80 or 100% of how it's laid out), its panel in the corner asked for, HUD_X and HUD_Y in from its
+     * edges. */
+    enum { SCREEN_W = 1280, SCREEN_H = 720 };
+    const float scale = size == HUD_SMALL ? 0.7f : size == HUD_LARGE ? 1.0f : 0.8f;
+    float w, hgt;
+    if (mode == STATS_COMPACT) {
+        CompactText t;
+        Piece p[7];
+        w = compact_pieces(hud, net, &t, p);
+        hgt = 32.0f;
+    } else {
+        w = HUD_W + 2 * HUD_PAD;
+        hgt = detailed_height(hud);
+    }
+    const bool right = corner == HUD_TOP_RIGHT || corner == HUD_BOTTOM_RIGHT;
+    const bool bottom = corner == HUD_BOTTOM_LEFT || corner == HUD_BOTTOM_RIGHT;
+    const float to_x = right ? SCREEN_W - HUD_X - w * scale : HUD_X;
+    const float to_y = bottom ? SCREEN_H - HUD_Y - hgt * scale : HUD_Y;
+    gfx_transform_begin(scale, HUD_X, HUD_Y, to_x, to_y);
     if (mode == STATS_COMPACT)
         draw_compact(hud, net);
     else if (mode == STATS_DETAILED)
         draw_detailed(hud, perf, net, history);
+    gfx_scale_end();
 }
 
 void ui_draw_temperatures(const PerfReadings *perf)
@@ -424,5 +571,5 @@ void ui_draw_temperatures(const PerfReadings *perf)
     snprintf(text, sizeof text, "CPU %.0f\xC2\xB0" "C   GPU %.0f\xC2\xB0" "C", perf->temp_cpu, perf->temp_gpu);
     const uint32_t c = perf->temp_cpu > perf->temp_gpu ? temperature_colour(perf->temp_cpu)
                                                         : temperature_colour(perf->temp_gpu);
-    gfx_text_right(THEME_RIGHT, THEME_FOOTER_Y + 4, 1, c == THEME_TEXT_2 ? THEME_TEXT_3 : c, text);
+    gfx_text_right(THEME_RIGHT - badge_width() - 32, THEME_FOOTER_Y + 4, 1, c == THEME_TEXT_2 ? THEME_TEXT_3 : c, text);
 }

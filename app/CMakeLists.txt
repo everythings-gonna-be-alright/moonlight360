@@ -72,17 +72,17 @@ target_compile_definitions(gamestream PRIVATE PATH_MAX=260)
 
 # --- The title ---------------------------------------------------------------------------------------------------
 add_executable(moonlight360
-  src/main.c src/config.c src/menu.c src/apps.c src/overlay.c src/ui.c src/gfx.c src/perf.c src/gpumc.c src/gpudec.c src/session.c src/video.c src/render.c src/audio.c src/input.c src/placement.c src/posix_stubs.c src/diag.c src/netfix.c src/logbuf.c src/devreturn.c)
+  src/main.c src/config.c src/menu.c src/icons.c src/moon.c src/apps.c src/image.c src/coverart.c src/overlay.c src/ui.c src/theme.c src/gfx.c src/perf.c src/session.c src/wol.c src/discover.c src/video.c src/render.c src/audio.c src/input.c src/uisound.c src/placement.c src/posix_stubs.c src/diag.c src/netfix.c src/logbuf.c src/devreturn.c)
 set_target_properties(moonlight360 PROPERTIES C_STANDARD 17 C_EXTENSIONS ON)
 target_compile_options(moonlight360 PRIVATE -O2 -Wall -Wextra -Wno-unused-parameter)
 target_include_directories(moonlight360 PRIVATE src "${FFMPEG_PREFIX}/include"
   "${TP}/moonlight-tv/core/moonlight-common-c/src")
 # Every pthread goes through placement.c, which puts it on a hardware thread.
+target_include_directories(moonlight360 PRIVATE "${TP}/stb")
+set_source_files_properties(src/image.c PROPERTIES COMPILE_OPTIONS "-Wno-sign-compare;-Wno-unused-function;-Wno-implicit-fallthrough")
 target_link_options(moonlight360 PRIVATE -Wl,--wrap=pthread_create -Wl,--wrap=setsockopt -Wl,--wrap=recvfrom -Wl,--wrap=connect
   -Wl,--wrap=xsdk_log_write_bytes -Wl,--wrap=poll)
 target_link_libraries(moonlight360 PRIVATE gamestream moonlight-common-c opus
   "${FFMPEG_PREFIX}/lib/libavcodec.a" "${FFMPEG_PREFIX}/lib/libavutil.a")
-xsdk_add_shaders(moonlight360 shaders/yuv.vert shaders/yuv.frag shaders/shape.vert shaders/shape.frag
-                 shaders/mc.vert shaders/mc_chroma.frag shaders/mc_probe.frag shaders/mc_copy.frag shaders/mc_pg.frag
-                 shaders/mc_pb.frag shaders/mc_ph.frag shaders/mc_pj.frag shaders/mc_final.frag)
-xsdk_add_xex(moonlight360 NAME "Moonlight 360" VERSION 0.1.0.0)
+xsdk_add_shaders(moonlight360 shaders/yuv.vert shaders/yuv.frag shaders/shape.vert shaders/shape.frag shaders/font.vert shaders/font.frag shaders/image.vert shaders/image.frag)
+xsdk_add_xex(moonlight360 NAME "Moonlight 360" VERSION 0.3.0.0)

@@ -23,7 +23,7 @@ typedef struct {
 } INPUT_GAMEPAD;
 
 /* gpu.h */
-enum { XSDK_PRIMITIVE_TRIANGLE_STRIP = 6 };
+enum { XSDK_PRIMITIVE_TRIANGLE_LIST = 4, XSDK_PRIMITIVE_TRIANGLE_STRIP = 6 };
 enum { XSDK_BLEND_ZERO = 0, XSDK_BLEND_ONE = 1, XSDK_BLEND_SRC_ALPHA = 6, XSDK_BLEND_ONE_MINUS_SRC_ALPHA = 7 };
 enum { XSDK_BLEND_OP_ADD };
 enum { XSDK_WRITE_ALL = 0xF };
@@ -49,6 +49,7 @@ void xsdk_gpu_set_raster(const XsdkRasterState *state);
 void xsdk_gpu_set_vertex_constants(uint32_t first, const float *values, uint32_t count);
 void xsdk_gpu_set_vertices(uint32_t stream, uint32_t address, uint32_t size_bytes);
 void xsdk_gpu_draw(uint32_t primitive_type, uint32_t vertex_count);
+void xsdk_gpu_draw_indexed(uint32_t primitive_type, uint32_t index_address, uint32_t index_count, bool indices_32_bit);
 
 /* shader.h */
 enum { XSDK_USAGE_POSITION = 0, XSDK_USAGE_TEXCOORD = 5, XSDK_USAGE_COLOR = 10 };

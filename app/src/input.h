@@ -1,4 +1,4 @@
-/* Controllers: read with XAM about 1000 times a second on a thread of their own, and sent to the host from there
+/* Controllers: read with XAM about 500 times a second on a thread of their own, and sent to the host from there
  * while streaming, so a press goes out within about a millisecond instead of waiting for the next screen refresh. */
 #pragma once
 #include <stdbool.h>

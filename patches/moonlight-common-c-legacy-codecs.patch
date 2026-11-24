@@ -1,0 +1,327 @@
+diff -ruN a/src/Limelight-internal.h b/src/Limelight-internal.h
+--- a/src/Limelight-internal.h	2026-11-23 22:55:04
++++ b/src/Limelight-internal.h	2026-11-23 22:55:39
+@@ -2,6 +2,7 @@
+ 
+ #include "Platform.h"
+ #include "Limelight.h"
++#include "VideoFormats.h"   // codec negotiation (SdpGenerator.c, RtspConnection.c)
+ #include "PlatformSockets.h"
+ #include "PlatformThreads.h"
+ #include "PlatformCrypto.h"
+diff -ruN a/src/Limelight.h b/src/Limelight.h
+--- a/src/Limelight.h	2026-11-23 22:55:04
++++ b/src/Limelight.h	2026-11-23 22:55:39
+@@ -222,23 +222,27 @@
+ 
+ // Passed in StreamConfiguration.supportedVideoFormats to specify supported codecs
+ // and to DecoderRendererSetup() to specify selected codec.
+-#define VIDEO_FORMAT_H264            0x0001 // H.264 High Profile
+-#define VIDEO_FORMAT_H264_HIGH8_444  0x0004 // H.264 High 4:4:4 8-bit Profile
+-#define VIDEO_FORMAT_H265            0x0100 // HEVC Main Profile
+-#define VIDEO_FORMAT_H265_MAIN10     0x0200 // HEVC Main10 Profile
+-#define VIDEO_FORMAT_H265_REXT8_444  0x0400 // HEVC RExt 4:4:4 8-bit Profile
+-#define VIDEO_FORMAT_H265_REXT10_444 0x0800 // HEVC RExt 4:4:4 10-bit Profile
+-#define VIDEO_FORMAT_AV1_MAIN8       0x1000 // AV1 Main 8-bit profile
+-#define VIDEO_FORMAT_AV1_MAIN10      0x2000 // AV1 Main 10-bit profile
+-#define VIDEO_FORMAT_AV1_HIGH8_444   0x4000 // AV1 High 4:4:4 8-bit profile
+-#define VIDEO_FORMAT_AV1_HIGH10_444  0x8000 // AV1 High 4:4:4 10-bit profile
++#define VIDEO_FORMAT_H264            0x00000001 // H.264 High Profile
++#define VIDEO_FORMAT_H264_HIGH8_444  0x00000004 // H.264 High 4:4:4 8-bit Profile
++#define VIDEO_FORMAT_H265            0x00000100 // HEVC Main Profile
++#define VIDEO_FORMAT_H265_MAIN10     0x00000200 // HEVC Main10 Profile
++#define VIDEO_FORMAT_H265_REXT8_444  0x00000400 // HEVC RExt 4:4:4 8-bit Profile
++#define VIDEO_FORMAT_H265_REXT10_444 0x00000800 // HEVC RExt 4:4:4 10-bit Profile
++#define VIDEO_FORMAT_AV1_MAIN8       0x00001000 // AV1 Main 8-bit profile
++#define VIDEO_FORMAT_AV1_MAIN10      0x00002000 // AV1 Main 10-bit profile
++#define VIDEO_FORMAT_AV1_HIGH8_444   0x00004000 // AV1 High 4:4:4 8-bit profile
++#define VIDEO_FORMAT_AV1_HIGH10_444  0x00008000 // AV1 High 4:4:4 10-bit profile
++#define VIDEO_FORMAT_MPEG2           0x00010000 // MPEG-2/H.262 video (Sunshine protocol extension)
++#define VIDEO_FORMAT_H263P           0x00040000 // H.263+ video (Sunshine protocol extension)
+ 
+ // Masks for clients to use to match video codecs without profile-specific details.
+-#define VIDEO_FORMAT_MASK_H264   0x000F
+-#define VIDEO_FORMAT_MASK_H265   0x0F00
+-#define VIDEO_FORMAT_MASK_AV1    0xF000
+-#define VIDEO_FORMAT_MASK_10BIT  0xAA00
+-#define VIDEO_FORMAT_MASK_YUV444 0xCC04
++#define VIDEO_FORMAT_MASK_H264   0x0000000F
++#define VIDEO_FORMAT_MASK_H265   0x00000F00
++#define VIDEO_FORMAT_MASK_AV1    0x0000F000
++#define VIDEO_FORMAT_MASK_MPEG2  0x00010000
++#define VIDEO_FORMAT_MASK_H263P  0x00040000
++#define VIDEO_FORMAT_MASK_10BIT  0x0000AA00
++#define VIDEO_FORMAT_MASK_YUV444 0x0000CC04
+ 
+ // If set in the renderer capabilities field, this flag will cause audio/video data to
+ // be submitted directly from the receive thread. This should only be specified if the
+@@ -513,11 +517,15 @@
+ #define SCM_HEVC_REXT10_444 0x00100000 // Sunshine extension
+ #define SCM_AV1_HIGH8_444   0x00200000 // Sunshine extension
+ #define SCM_AV1_HIGH10_444  0x00400000 // Sunshine extension
++#define SCM_MPEG2           0x00800000 // Sunshine protocol extension
++#define SCM_H263P           0x02000000 // Sunshine protocol extension
+ 
+ // SCM masks to identify various codec capabilities
+ #define SCM_MASK_H264   (SCM_H264 | SCM_H264_HIGH8_444)
+ #define SCM_MASK_HEVC   (SCM_HEVC | SCM_HEVC_MAIN10 | SCM_HEVC_REXT8_444 | SCM_HEVC_REXT10_444)
+ #define SCM_MASK_AV1    (SCM_AV1_MAIN8 | SCM_AV1_MAIN10 | SCM_AV1_HIGH8_444 | SCM_AV1_HIGH10_444)
++#define SCM_MASK_MPEG2  SCM_MPEG2
++#define SCM_MASK_H263P  SCM_H263P
+ #define SCM_MASK_10BIT  (SCM_HEVC_MAIN10 | SCM_HEVC_REXT10_444 | SCM_AV1_MAIN10 | SCM_AV1_HIGH10_444)
+ #define SCM_MASK_YUV444 (SCM_H264_HIGH8_444 | SCM_HEVC_REXT8_444 | SCM_HEVC_REXT10_444 | SCM_AV1_HIGH8_444 | SCM_AV1_HIGH10_444)
+ 
+diff -ruN a/src/RtspConnection.c b/src/RtspConnection.c
+--- a/src/RtspConnection.c	2026-11-23 22:55:04
++++ b/src/RtspConnection.c	2026-11-23 22:55:39
+@@ -1,5 +1,6 @@
+ #include "Limelight-internal.h"
+ #include "Rtsp.h"
++#include "VideoFormats.h"
+ 
+ #define RTSP_CONNECT_TIMEOUT_SEC 10
+ #define RTSP_RECEIVE_TIMEOUT_SEC 15
+@@ -1087,52 +1088,17 @@
+             goto Exit;
+         }
+ 
+-        if ((StreamConfig.supportedVideoFormats & VIDEO_FORMAT_MASK_AV1) && strstr(response.payload, "AV1/90000")) {
+-            if ((serverInfo->serverCodecModeSupport & SCM_AV1_HIGH10_444) && (StreamConfig.supportedVideoFormats & VIDEO_FORMAT_AV1_HIGH10_444)) {
+-                NegotiatedVideoFormat = VIDEO_FORMAT_AV1_HIGH10_444;
+-            }
+-            else if ((serverInfo->serverCodecModeSupport & SCM_AV1_MAIN10) && (StreamConfig.supportedVideoFormats & VIDEO_FORMAT_AV1_MAIN10)) {
+-                NegotiatedVideoFormat = VIDEO_FORMAT_AV1_MAIN10;
+-            }
+-            else if ((serverInfo->serverCodecModeSupport & SCM_AV1_HIGH8_444) && (StreamConfig.supportedVideoFormats & VIDEO_FORMAT_AV1_HIGH8_444)) {
+-                NegotiatedVideoFormat = VIDEO_FORMAT_AV1_HIGH8_444;
+-            }
+-            else {
+-                NegotiatedVideoFormat = VIDEO_FORMAT_AV1_MAIN8;
+-            }
++        NegotiatedVideoFormat = chooseVideoFormat(StreamConfig.supportedVideoFormats,
++                                                  serverInfo->serverCodecModeSupport, response.payload);
++        if (NegotiatedVideoFormat == 0) {
++            Limelog("No mutually supported video codec found in RTSP DESCRIBE response\n");
++            ret = -1;
++            goto Exit;
+         }
+-        else if ((StreamConfig.supportedVideoFormats & VIDEO_FORMAT_MASK_H265) && strstr(response.payload, "sprop-parameter-sets=AAAAAU")) {
+-            // The RTSP DESCRIBE reply will contain a collection of SDP media attributes that
+-            // describe the various supported video stream formats and include the SPS, PPS,
+-            // and VPS (if applicable). We will use this information to determine whether the
+-            // server can support HEVC. For some reason, they still set the MIME type of the HEVC
+-            // format to H264, so we can't just look for the HEVC MIME type. What we'll do instead is
+-            // look for the base 64 encoded VPS NALU prefix that is unique to the HEVC bitstream.
+-            if ((serverInfo->serverCodecModeSupport & SCM_HEVC_REXT10_444) && (StreamConfig.supportedVideoFormats & VIDEO_FORMAT_H265_REXT10_444)) {
+-                NegotiatedVideoFormat = VIDEO_FORMAT_H265_REXT10_444;
+-            }
+-            else if ((serverInfo->serverCodecModeSupport & SCM_HEVC_MAIN10) && (StreamConfig.supportedVideoFormats & VIDEO_FORMAT_H265_MAIN10)) {
+-                NegotiatedVideoFormat = VIDEO_FORMAT_H265_MAIN10;
+-            }
+-            else if ((serverInfo->serverCodecModeSupport & SCM_HEVC_REXT8_444) && (StreamConfig.supportedVideoFormats & VIDEO_FORMAT_H265_REXT8_444)) {
+-                NegotiatedVideoFormat = VIDEO_FORMAT_H265_REXT8_444;
+-            }
+-            else {
+-                NegotiatedVideoFormat = VIDEO_FORMAT_H265;
+-            }
+-        }
+-        else {
+-            if ((serverInfo->serverCodecModeSupport & SCM_H264_HIGH8_444) && (StreamConfig.supportedVideoFormats & VIDEO_FORMAT_H264_HIGH8_444)) {
+-                NegotiatedVideoFormat = VIDEO_FORMAT_H264_HIGH8_444;
+-            }
+-            else {
+-                NegotiatedVideoFormat = VIDEO_FORMAT_H264;
+-            }
+ 
+-            // Dimensions over 4096 are only supported with HEVC on NVENC
+-            if (StreamConfig.width > 4096 || StreamConfig.height > 4096) {
+-                Limelog("WARNING: Host PC doesn't support HEVC. Streaming at resolutions above 4K using H.264 will likely fail!\n");
+-            }
++        if ((NegotiatedVideoFormat & VIDEO_FORMAT_MASK_H264) &&
++                (StreamConfig.width > 4096 || StreamConfig.height > 4096)) {
++            Limelog("WARNING: Streaming at resolutions above 4K using H.264 will likely fail!\n");
+         }
+ 
+         // Look for the SDP attribute that indicates we're dealing with a server that supports RFI
+diff -ruN a/src/SdpGenerator.c b/src/SdpGenerator.c
+--- a/src/SdpGenerator.c	2026-11-23 22:55:04
++++ b/src/SdpGenerator.c	2026-11-23 22:55:39
+@@ -440,8 +440,13 @@
+         snprintf(payloadStr, sizeof(payloadStr), "%d", slicesPerFrame);
+         err |= addAttributeString(&optionHead, "x-nv-video[0].videoEncoderSlicesPerFrame", payloadStr);
+ 
+-        if (NegotiatedVideoFormat & VIDEO_FORMAT_MASK_AV1) {
+-            err |= addAttributeString(&optionHead, "x-nv-vqos[0].bitStreamFormat", "2");
++        if (NegotiatedVideoFormat & (VIDEO_FORMAT_MASK_AV1 | VIDEO_FORMAT_MASK_MPEG2 | VIDEO_FORMAT_MASK_H263P)) {
++            // Sunshine codec extensions use GameStream framing and shared wire identifiers.
++            snprintf(payloadStr, sizeof(payloadStr), "%d", getVideoBitStreamFormat(NegotiatedVideoFormat));
++            if (NegotiatedVideoFormat & (VIDEO_FORMAT_MASK_MPEG2 | VIDEO_FORMAT_MASK_H263P)) {
++                err |= addAttributeString(&optionHead, "x-nv-clientSupportHevc", "0");
++            }
++            err |= addAttributeString(&optionHead, "x-nv-vqos[0].bitStreamFormat", payloadStr);
+         }
+         else if (NegotiatedVideoFormat & VIDEO_FORMAT_MASK_H265) {
+             err |= addAttributeString(&optionHead, "x-nv-clientSupportHevc", "1");
+diff -ruN a/src/VideoDepacketizer.c b/src/VideoDepacketizer.c
+--- a/src/VideoDepacketizer.c	2026-11-23 22:55:04
++++ b/src/VideoDepacketizer.c	2026-11-23 22:55:39
+@@ -58,6 +58,10 @@
+ #define HEVC_NAL_TYPE_FILLER 38
+ #define HEVC_NAL_TYPE_SEI 39
+ 
++static bool isBitstreamPassthroughFormat(void) {
++    return NegotiatedVideoFormat & (VIDEO_FORMAT_MASK_AV1 | VIDEO_FORMAT_MASK_MPEG2 | VIDEO_FORMAT_MASK_H263P);
++}
++
+ // Init
+ void initializeVideoDepacketizer(int pktSize) {
+     LbqInitializeLinkedBlockingQueue(&decodeUnitQueue, 15);
+@@ -214,8 +218,8 @@
+             LC_ASSERT_VT(decodeUnit->bufferList->next->next->bufferType == BUFFER_TYPE_PPS);
+             LC_ASSERT_VT(decodeUnit->bufferList->next->next->next != NULL);
+         }
+-        else if (NegotiatedVideoFormat & VIDEO_FORMAT_MASK_AV1) {
+-            // We don't parse the AV1 bitstream
++        else if (isBitstreamPassthroughFormat()) {
++            // We forward AV1, MPEG-2, and H.263+ bitstreams without NAL parsing.
+             LC_ASSERT_VT(decodeUnit->bufferList->bufferType == BUFFER_TYPE_PICDATA);
+         }
+         else {
+diff -ruN a/src/VideoFormats.c b/src/VideoFormats.c
+--- a/src/VideoFormats.c	1970-01-01 03:00:00
++++ b/src/VideoFormats.c	2026-11-23 22:55:39
+@@ -0,0 +1,105 @@
++/**
++ * @file VideoFormats.c
++ * @brief Negotiate modern and legacy video codecs using shared protocol capabilities.
++ */
++#include "VideoFormats.h"
++
++#include <string.h>
++
++// A client that would rather have a legacy codec than H.264 where the host offers both (the Xbox 360 decodes
++// MPEG-2 with less work) sets this; hosts without the codec still negotiate H.264.
++int LiPreferLegacyVideoFormats = 0;
++
++static int chooseLegacyVideoFormat(int supportedVideoFormats, int serverCodecModeSupport, const char* sdpPayload) {
++    // Legacy codecs are opt-in Sunshine protocol extensions, available to any client.
++    if ((supportedVideoFormats & VIDEO_FORMAT_MPEG2) && (serverCodecModeSupport & SCM_MPEG2) &&
++            (strstr(sdpPayload, "MPV/90000") != NULL || strstr(sdpPayload, "MPEG2/90000") != NULL ||
++             strstr(sdpPayload, "MPEG-2/90000") != NULL)) {
++        return VIDEO_FORMAT_MPEG2;
++    }
++    if ((supportedVideoFormats & VIDEO_FORMAT_H263P) && (serverCodecModeSupport & SCM_H263P) &&
++            (strstr(sdpPayload, "H263-1998/90000") != NULL || strstr(sdpPayload, "H263-2000/90000") != NULL)) {
++        return VIDEO_FORMAT_H263P;
++    }
++    return 0;
++}
++
++int chooseVideoFormat(int supportedVideoFormats, int serverCodecModeSupport, const char* sdpPayload) {
++    if (sdpPayload == NULL) {
++        return 0;
++    }
++
++    if (LiPreferLegacyVideoFormats) {
++        int legacy = chooseLegacyVideoFormat(supportedVideoFormats, serverCodecModeSupport, sdpPayload);
++        if (legacy != 0) {
++            return legacy;
++        }
++    }
++
++    if (strstr(sdpPayload, "AV1/90000") != NULL) {
++        if ((supportedVideoFormats & VIDEO_FORMAT_AV1_HIGH10_444) && (serverCodecModeSupport & SCM_AV1_HIGH10_444)) {
++            return VIDEO_FORMAT_AV1_HIGH10_444;
++        }
++        if ((supportedVideoFormats & VIDEO_FORMAT_AV1_MAIN10) && (serverCodecModeSupport & SCM_AV1_MAIN10)) {
++            return VIDEO_FORMAT_AV1_MAIN10;
++        }
++        if ((supportedVideoFormats & VIDEO_FORMAT_AV1_HIGH8_444) && (serverCodecModeSupport & SCM_AV1_HIGH8_444)) {
++            return VIDEO_FORMAT_AV1_HIGH8_444;
++        }
++        if ((supportedVideoFormats & VIDEO_FORMAT_AV1_MAIN8) &&
++                (serverCodecModeSupport == 0 || (serverCodecModeSupport & SCM_AV1_MAIN8))) {
++            return VIDEO_FORMAT_AV1_MAIN8;
++        }
++    }
++
++    // GameStream identifies HEVC support using the VPS prefix in this attribute.
++    if (strstr(sdpPayload, "sprop-parameter-sets=AAAAAU") != NULL) {
++        if ((supportedVideoFormats & VIDEO_FORMAT_H265_REXT10_444) && (serverCodecModeSupport & SCM_HEVC_REXT10_444)) {
++            return VIDEO_FORMAT_H265_REXT10_444;
++        }
++        if ((supportedVideoFormats & VIDEO_FORMAT_H265_MAIN10) && (serverCodecModeSupport & SCM_HEVC_MAIN10)) {
++            return VIDEO_FORMAT_H265_MAIN10;
++        }
++        if ((supportedVideoFormats & VIDEO_FORMAT_H265_REXT8_444) && (serverCodecModeSupport & SCM_HEVC_REXT8_444)) {
++            return VIDEO_FORMAT_H265_REXT8_444;
++        }
++        if ((supportedVideoFormats & VIDEO_FORMAT_H265) &&
++                (serverCodecModeSupport == 0 || (serverCodecModeSupport & SCM_HEVC))) {
++            return VIDEO_FORMAT_H265;
++        }
++    }
++
++    if ((supportedVideoFormats & VIDEO_FORMAT_H264_HIGH8_444) && (serverCodecModeSupport & SCM_H264_HIGH8_444)) {
++        return VIDEO_FORMAT_H264_HIGH8_444;
++    }
++    if ((supportedVideoFormats & VIDEO_FORMAT_H264) &&
++            (serverCodecModeSupport == 0 || (serverCodecModeSupport & SCM_H264))) {
++        return VIDEO_FORMAT_H264;
++    }
++
++    return chooseLegacyVideoFormat(supportedVideoFormats, serverCodecModeSupport, sdpPayload);
++}
++
++int getVideoBitStreamFormat(int videoFormat) {
++    switch (videoFormat) {
++        case VIDEO_FORMAT_H264:
++        case VIDEO_FORMAT_H264_HIGH8_444:
++            return 0;
++        case VIDEO_FORMAT_H265:
++        case VIDEO_FORMAT_H265_MAIN10:
++        case VIDEO_FORMAT_H265_REXT8_444:
++        case VIDEO_FORMAT_H265_REXT10_444:
++            return 1;
++        case VIDEO_FORMAT_AV1_MAIN8:
++        case VIDEO_FORMAT_AV1_MAIN10:
++        case VIDEO_FORMAT_AV1_HIGH8_444:
++        case VIDEO_FORMAT_AV1_HIGH10_444:
++            return 2;
++        case VIDEO_FORMAT_MPEG2:
++            return 3;
++        case VIDEO_FORMAT_H263P:
++            return 4;
++        default:
++            return -1;
++    }
++}
+diff -ruN a/src/VideoFormats.h b/src/VideoFormats.h
+--- a/src/VideoFormats.h	1970-01-01 03:00:00
++++ b/src/VideoFormats.h	2026-11-23 22:55:39
+@@ -0,0 +1,25 @@
++/**
++ * @file VideoFormats.h
++ * @brief Internal codec negotiation and GameStream wire-format helpers.
++ */
++#pragma once
++
++#include "Limelight.h"
++
++/**
++ * @brief Choose a mutually supported codec without giving legacy codecs precedence.
++ *
++ * @param supportedVideoFormats Client decoder capability mask.
++ * @param serverCodecModeSupport Host codec capability mask; zero permits baseline profiles on older hosts.
++ * @param sdpPayload RTSP DESCRIBE payload advertising the host codecs.
++ * @return One VIDEO_FORMAT value, or zero when no supported codec is available.
++ */
++int chooseVideoFormat(int supportedVideoFormats, int serverCodecModeSupport, const char* sdpPayload);
++
++/**
++ * @brief Map a negotiated codec to its GameStream bitStreamFormat value.
++ *
++ * @param videoFormat One negotiated VIDEO_FORMAT value.
++ * @return Wire value from zero through four, or -1 for an invalid format.
++ */
++int getVideoBitStreamFormat(int videoFormat);

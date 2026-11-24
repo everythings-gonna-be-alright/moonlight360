@@ -1,7 +1,7 @@
 #version 450
 // A rounded rectangle by its signed distance: coverage falls from 1 to 0 across the edge, one pixel wide for a crisp
 // shape, many for a soft shadow. Scalars only: with vector max and length, the console filled triangles near the
-// corners with nothing (hybench's shape check, 2026-11-23), which showed in the menus as rhombs.
+// corners with nothing (a console shape check, 2026-11-23), which showed in the menus as rhombs.
 layout(location = 0) in vec4 v_color;
 layout(location = 1) in vec2 v_local;
 layout(location = 2) in vec4 v_shape;

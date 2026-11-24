@@ -1,4 +1,5 @@
 #include "session.h"
+#include "wol.h"
 
 #include <pthread.h>
 #include <stdarg.h>
@@ -18,7 +19,6 @@
 #include "diag.h"
 #include "logbuf.h"
 #include "netfix.h"
-#include "gpudec.h"
 #include "placement.h"
 #include "input.h"
 #include "video.h"
@@ -36,6 +36,13 @@ static atomic_bool stop_requested;
 static atomic_bool quit_requested;
 static bool stream_ended;
 static int termination_error;
+
+static void set_step(SessionStep step)
+{
+    pthread_mutex_lock(&lock);
+    view.step = step;
+    pthread_mutex_unlock(&lock);
+}
 
 static void set_view(SessionState state, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 static void set_view(SessionState state, const char *fmt, ...)
@@ -70,7 +77,7 @@ static const char *gs_message(int code)
 
 static void stage_starting(int stage)
 {
-    set_view(SESSION_WORKING, "Connecting: %s...", LiGetStageName(stage));
+    set_view(SESSION_WORKING, "%s...", LiGetStageName(stage));
 }
 
 static void stage_failed(int stage, int error)
@@ -218,14 +225,33 @@ static void *flow(void *arg)
     set_view(SESSION_WORKING, "Contacting %s...", config.host);
     /* "unsupported" = true: skip GameStream's legacy checks that the resolution/fps exactly match a display mode the
      * host reports, and that the host's version is a known GFE one. Sunshine scales any resolution. */
+    const bool wake = config.wake_on_lan && wol_send(config.host, config.host_mac);
     int ret = gs_get_status(client, &server, config.host, 0, true);
+    /* Woken, the PC takes a while to answer: ask again, waking it again each time, for up to WAKE_WAIT_S. */
+    enum { WAKE_WAIT_S = 40, WAKE_EVERY_S = 4 };
+    for (int waited = 0; wake && ret != GS_OK && ret != GS_UNSUPPORTED_VERSION && waited < WAKE_WAIT_S &&
+                         !atomic_load(&stop_requested);
+         waited += WAKE_EVERY_S) {
+        set_view(SESSION_WORKING, "Waking the PC up... (%d s)", waited);
+        sleep(WAKE_EVERY_S);
+        wol_send(config.host, config.host_mac);
+        memset(&server, 0, sizeof server);
+        ret = gs_get_status(client, &server, config.host, 0, true);
+    }
+    if (ret == GS_OK || ret == GS_UNSUPPORTED_VERSION) {   /* its MAC, for waking it next time */
+        pthread_mutex_lock(&lock);
+        snprintf(view.mac, sizeof view.mac, "%s", server.mac ? server.mac : "");
+        pthread_mutex_unlock(&lock);
+    }
     if (ret != GS_OK && ret != GS_UNSUPPORTED_VERSION) {
         set_view(SESSION_FAILED, "Could not reach Sunshine at %s:\n%s (%d)\nCheck the Host PC setting.",
                  config.host, gs_message(ret), ret);
         goto out;
     }
+    set_step(SESSION_STEP_PAIR);
     if (!server.paired && !pair(client, &server))
         goto out;
+    set_step(SESSION_STEP_START_APP);
     if (atomic_load(&stop_requested))
         goto out;
 
@@ -233,6 +259,9 @@ static void *flow(void *arg)
     int app_id = find_app(client, &server);
     if (app_id < 0)
         goto out;
+    pthread_mutex_lock(&lock);
+    view.app_id = app_id;
+    pthread_mutex_unlock(&lock);
 
     /* Sunshine resumes whatever app is running, whichever is asked for: close a different one first. */
     if (server.currentGame != 0 && server.currentGame != app_id) {
@@ -254,13 +283,19 @@ static void *flow(void *arg)
     stream.packetSize = config.packet_size;
     stream.streamingRemotely = STREAM_CFG_AUTO;
     stream.audioConfiguration = AUDIO_CONFIGURATION_STEREO;
-    stream.supportedVideoFormats = VIDEO_FORMAT_H264;
+    /* MPEG-2 where the setting asks for it and the host offers it (its session description says so; this app never
+     * sees the host's codec list, libgamestream drops it); H.264 from any other host. */
+    stream.supportedVideoFormats = VIDEO_FORMAT_H264 | (config.codec == CODEC_MPEG2 ? VIDEO_FORMAT_MPEG2 : 0);
     stream.clientRefreshRateX100 = 6000;
     stream.colorSpace = COLORSPACE_REC_709;
     stream.colorRange = COLOR_RANGE_LIMITED;
     /* As moonlight-tv: audio encrypted; video only if the host insists (decrypting every video packet costs CPU). */
     stream.encryptionFlags = ENCFLG_AUDIO;
-    server.serverInfo.serverCodecModeSupport = SCM_H264;
+    server.serverInfo.serverCodecModeSupport = SCM_H264 | (config.codec == CODEC_MPEG2 ? SCM_MPEG2 : 0);
+    {
+        extern int LiPreferLegacyVideoFormats;   /* patches/moonlight-common-c-legacy-codecs.patch */
+        LiPreferLegacyVideoFormats = config.codec == CODEC_MPEG2;
+    }
 
     set_view(SESSION_WORKING, "Starting \"%s\" at %dx%d %d fps, %d kbps...", config.app, stream.width, stream.height,
              stream.fps, stream.bitrate);
@@ -279,7 +314,7 @@ static void *flow(void *arg)
     listener.stageFailed = stage_failed;
     listener.connectionTerminated = connection_terminated;
     listener.logMessage = log_message;
-    if (config.input)
+    if (config.input && config.rumble)
         listener.rumble = input_rumble;
 
     pthread_mutex_lock(&lock);
@@ -288,7 +323,7 @@ static void *flow(void *arg)
     pthread_mutex_unlock(&lock);
     input_reset();
     video_set_fast_decode(config.fast_decode);
-    gpudec_set_wanted(config.gpu_decode);
+    video_set_slices(config.slices);
     {
         /* patches/moonlight-common-c-sdp-options.patch: 5 is Moonlight's own choice, so no override then. */
         extern int LiAudioPacketDurationOverrideMs;
@@ -302,6 +337,7 @@ static void *flow(void *arg)
     audio_set_output_enabled(config.audio_output);
 
     netfix_reset_datagrams();
+    set_step(SESSION_STEP_STREAM);
     ret = LiStartConnection(&server.serverInfo, &stream, &listener, &video_callbacks, &audio_callbacks, NULL, 0, NULL,
                             0);
     if (ret != 0) {
@@ -316,6 +352,7 @@ static void *flow(void *arg)
                (EncryptionFeaturesEnabled & 0x02) ? "on" : "off", (EncryptionFeaturesEnabled & 0x01) ? "on" : "off");
     }
     netfix_keepalive(config.host, config.keepalive_pps);
+    set_step(SESSION_STEP_PICTURE);
     set_view(SESSION_STREAMING, "Streaming");
 
     pthread_mutex_lock(&lock);
@@ -362,6 +399,11 @@ void session_start(const Config *c)
     atomic_store(&stop_requested, false);
     atomic_store(&quit_requested, false);
     logbuf_begin();   /* no log writes to USB storage while the session runs; main.c ends it */
+    set_step(SESSION_STEP_REACH);
+    pthread_mutex_lock(&lock);
+    view.mac[0] = 0;
+    view.app_id = 0;
+    pthread_mutex_unlock(&lock);
     set_view(SESSION_WORKING, "Starting...");
     thread_running = pthread_create(&thread, NULL, flow, NULL) == 0;
     if (!thread_running)

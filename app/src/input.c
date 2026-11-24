@@ -11,7 +11,7 @@
 #include "xsdk/thread.h"
 
 enum {
-    POLL_MS = 1,
+    POLL_MS = 2,   /* the pad reports about every 8 ms: 2 ms adds at most 1 ms and wakes half as often */
     /* Sticks and triggers alone are sent at most this often: faster than the pad reports them (about every 8 ms), and
      * a cap on small packets, which the console's Wi-Fi handles badly. Buttons go out at once. */
     ANALOG_INTERVAL_US = 4000,

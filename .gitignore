@@ -1,9 +1,11 @@
 # build output, test clips (dev/make_clips.sh makes them), console logs
 /build/
 /dev/bench/data/*.h264
+/dev/bench/data/*.m2v
 *.log
 .DS_Store
 
 # checkouts that aren't used by the build
 /third_party/libxenon/
 /third_party/moonlight-common-c/
+dev/about/preview.png

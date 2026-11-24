@@ -8,7 +8,7 @@
 #include <libavcodec/avcodec.h>
 #include <libavutil/buffer.h>
 
-#include "gpudec.h"
+#include "netstats.h"
 #include "placement.h"
 #include "xsdk/kernel.h"
 #include "xsdk/texture.h"
@@ -17,8 +17,8 @@
 enum {
     /* Decoding threads: the decode thread plus 5 FFmpeg slice workers, one on each hardware thread. */
     DECODE_THREADS = 6,
-    /* Slices per frame asked of the host, one per decoding thread. */
-    SLICES_PER_FRAME = 6,
+    /* Slices per frame asked of the host unless the setting says otherwise: four per decoding thread. */
+    DEFAULT_SLICES_PER_FRAME = 24,
     /* The decode thread's hardware thread. */
     DECODE_HW_THREAD = 2,
     /* Decode threads' priority. -2 was tried on a misread probe result and slowed decoding to ~30 ms a frame; the
@@ -31,6 +31,13 @@ enum {
 static const uint32_t worker_hw_threads[] = { 3, 4, 5, 0, 1 };
 static bool fast_decode;
 static bool decode_enabled = true;
+/* With one slice a thread, a frame takes as long as its heaviest slice, and the others' threads wait. With more
+ * slices than threads, FFmpeg (patched: h264dec.c reads AVCodecContext.slices) queues the whole frame's slices and
+ * each thread takes the next as it finishes one. In a real 1080p30 stream at 20 Mbit/s the console decoded a frame
+ * in 31.4 ms with 24 slices against 36.9 with 6, and stopped losing frames (log, 2026-11-23 22:08). decbench's clip,
+ * with its detail spread evenly, shows no gain (23.3 ms both ways). Where the host's stream has deblocking, the
+ * edges between slices go unfiltered (AV_CODEC_FLAG2_FAST), so every slice more is one more such edge. */
+static int slices_per_frame = DEFAULT_SLICES_PER_FRAME;
 static int decode_priority = DEFAULT_DECODE_PRIORITY;
 
 void video_set_decode_priority(int priority)
@@ -46,6 +53,12 @@ void video_set_decode_enabled(bool enabled)
 void video_set_fast_decode(bool fast)
 {
     fast_decode = fast;
+}
+
+void video_set_slices(int slices)
+{
+    slices_per_frame = slices == 6 || slices == 12 || slices == 48 ? slices : DEFAULT_SLICES_PER_FRAME;
+    video_callbacks.capabilities = CAPABILITY_SLICES_PER_FRAME(slices_per_frame);
 }
 
 /* Reads entropy_coding_mode_flag from an H.264 picture parameter set (NAL type 8): after the NAL header come
@@ -89,6 +102,29 @@ static int find_cabac(const uint8_t *data, int size)
             return pps_cabac(data + i + 3, size - i - 3);
     }
     return -1;
+}
+
+/* Slices (NAL types 1 and 5) in a decode unit's Annex B data: what the host really sent for what was asked. */
+static int count_slices(const uint8_t *data, int size)
+{
+    int slices = 0;
+    for (int i = 0; i + 3 < size; i++) {
+        if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1) {
+            const int type = data[i + 3] & 0x1F;
+            slices += type == 1 || type == 5;
+            i += 3;
+        }
+    }
+    return slices;
+}
+
+/* patches/ffmpeg-xenon-vmx128.patch (h264dec.h): set by the decoder when a slice header keeps the deblocking filter
+ * on, and when a block is predicted from a sub-pixel position. Cleared here when a stream starts. */
+extern int ff_h264_stream_deblocks, ff_h264_stream_subpel;
+
+static int stream_kind_now(void)
+{
+    return ff_h264_stream_deblocks ? STREAM_FULL : ff_h264_stream_subpel ? STREAM_NO_DEBLOCK : STREAM_LEAN;
 }
 
 static const AVCodec *codec;
@@ -302,11 +338,14 @@ static void write_out(const AVFrame *f)
 
 static int setup(int video_format, int width, int height, int redraw_rate, void *context, int dr_flags)
 {
-    if (!(video_format & VIDEO_FORMAT_MASK_H264)) {
+    /* MPEG-2 is a Sunshine extension (patches/moonlight-common-c-legacy-codecs.patch): no deblocking filter, simpler
+     * motion and bitstream than H.264, at more bits for the same picture. */
+    const bool mpeg2 = (video_format & VIDEO_FORMAT_MASK_MPEG2) != 0;
+    if (!mpeg2 && !(video_format & VIDEO_FORMAT_MASK_H264)) {
         printf("[E] video: unsupported format 0x%x\n", video_format);
         return -1;
     }
-    codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+    codec = avcodec_find_decoder(mpeg2 ? AV_CODEC_ID_MPEG2VIDEO : AV_CODEC_ID_H264);
     ctx = codec ? avcodec_alloc_context3(codec) : NULL;
     packet = av_packet_alloc();
     frame = av_frame_alloc();
@@ -318,10 +357,9 @@ static int setup(int video_format, int width, int height, int redraw_rate, void 
     ctx->flags2 |= AV_CODEC_FLAG2_FAST;
     ctx->thread_count = DECODE_THREADS;
     ctx->thread_type = FF_THREAD_SLICE;
+    ctx->slices = slices_per_frame;   /* above the thread count: the threads take slices from a queue */
     ctx->get_buffer2 = get_buffer;
-    /* Experimental GPU decoding (gpudec.c) needs the deblocking filter off, as fast decode has it. */
-    const bool gpu = gpudec_start((width + 15) & ~15, (height + 15) & ~15);
-    if (fast_decode || gpu)
+    if (!mpeg2 && fast_decode)   /* MPEG-2 has no deblocking filter to skip */
         ctx->skip_loop_filter = AVDISCARD_ALL;
 
     /* FFmpeg creates its slice workers inside avcodec_open2: place them on the other cores. */
@@ -336,11 +374,13 @@ static int setup(int video_format, int width, int height, int redraw_rate, void 
     }
     memset(&stats, 0, sizeof stats);
     stats.cabac = -1;
+    stats.mpeg2 = mpeg2;
+    stats.stream_kind = STREAM_UNKNOWN;
+    ff_h264_stream_deblocks = ff_h264_stream_subpel = 0;
     stats.host_ms = -1.0f;
     memset(&lat, 0, sizeof lat);
     lat.start_us = LiGetMicroseconds();
-    stats.fast_decode = fast_decode || gpu;
-    stats.gpu_decode = gpu;
+    stats.fast_decode = !mpeg2 && fast_decode;
     window_start_us = now_us();
     window_decode_us = 0;
     window_frames = 0;
@@ -350,8 +390,9 @@ static int setup(int video_format, int width, int height, int redraw_rate, void 
     net.budget_ms = redraw_rate > 0 ? 1000.0f / (float)redraw_rate : 0.0f;
     pthread_mutex_unlock(&lock);
     moved_decode_thread = 0;
-    printf("[I] video: H.264 %dx%d@%d, %d decode threads at priority %d, %d slices asked, deblocking %s%s\n",
-           width, height, redraw_rate, DECODE_THREADS, decode_priority, SLICES_PER_FRAME, fast_decode ? "skipped (fast decode)" : "on",
+    printf("[I] video: %s %dx%d@%d, %d decode threads at priority %d, %d slices asked, deblocking %s%s\n",
+           mpeg2 ? "MPEG-2" : "H.264", width, height, redraw_rate, DECODE_THREADS, decode_priority, slices_per_frame,
+           mpeg2 ? "not in this codec" : fast_decode ? "skipped (fast decode)" : "on",
            decode_enabled ? "" : "; DECODING OFF (network test)");
     return 0;
 }
@@ -361,7 +402,6 @@ static void cleanup(void)
     pthread_mutex_lock(&lock);
     av_frame_free(&pending);
     pthread_mutex_unlock(&lock);
-    gpudec_stop();
     av_frame_free(&frame);
     av_packet_free(&packet);
     avcodec_free_context(&ctx);
@@ -405,32 +445,26 @@ static int submit(PDECODE_UNIT unit)
         length += entry->length;
     }
     memset(packet_buffer + length, 0, AV_INPUT_BUFFER_PADDING_SIZE);
-    if (stats.cabac < 0 && unit->frameType == FRAME_TYPE_IDR) {
+    if (!stats.mpeg2 && stats.cabac < 0 && unit->frameType == FRAME_TYPE_IDR) {
         int cabac = find_cabac(packet_buffer, length);
         if (cabac >= 0) {
             pthread_mutex_lock(&lock);
             stats.cabac = cabac;
             pthread_mutex_unlock(&lock);
-            printf("[I] video: host stream uses %s\n", cabac ? "CABAC" : "CAVLC");
+            printf("[I] video: host stream uses %s, %d slices in its first frame (%d asked)\n",
+                   cabac ? "CABAC" : "CAVLC", count_slices(packet_buffer, length), slices_per_frame);
         }
     }
     packet->data = packet_buffer;
     packet->size = length;
 
     uint64_t start = now_us();
-    gpudec_begin_frame();
     int ret = avcodec_send_packet(ctx, packet);
     if (ret < 0) {
         stats.errors++;
         return DR_NEED_IDR;
     }
     while ((ret = avcodec_receive_frame(ctx, frame)) == 0) {
-        /* With GPU decoding, the frame is only parsed so far: the GPU and the replay finish it. */
-        if (gpudec_active() && !gpudec_finish_frame(frame)) {
-            av_frame_unref(frame);
-            stats.errors++;
-            return DR_NEED_IDR;   /* that frame is broken; a keyframe brings the CPU's decoding back in step */
-        }
         write_out(frame);
         AVFrame *out = av_frame_clone(frame);
         av_frame_unref(frame);
@@ -461,9 +495,15 @@ static int submit(PDECODE_UNIT unit)
     if (now - window_start_us >= 1000000) {
         pthread_mutex_lock(&lock);
         stats.decode_ms_avg = window_frames ? window_decode_us / 1000.0f / window_frames : 0;
-        stats.gpu_decode = gpudec_active();
-        gpudec_times(&stats.gpu_ms, &stats.replay_ms);
+        const int kind = stats.mpeg2 || !window_frames ? stats.stream_kind : stream_kind_now();
+        const bool kind_changed = kind != stats.stream_kind;
+        stats.stream_kind = kind;
         pthread_mutex_unlock(&lock);
+        if (kind_changed)
+            printf("[I] video: the host's stream %s\n",
+                   kind == STREAM_LEAN ? "is lean: no deblocking filter, whole-pixel motion only so far"
+                   : kind == STREAM_NO_DEBLOCK ? "has no deblocking filter, but moves blocks by fractions of a pixel"
+                                               : "uses the deblocking filter (not a lean stream)");
         window_start_us = now;
         window_decode_us = 0;
         window_frames = 0;
@@ -528,5 +568,5 @@ DECODER_RENDERER_CALLBACKS video_callbacks = {
     .setup = setup,
     .cleanup = cleanup,
     .submitDecodeUnit = submit,
-    .capabilities = CAPABILITY_SLICES_PER_FRAME(SLICES_PER_FRAME),
+    .capabilities = CAPABILITY_SLICES_PER_FRAME(DEFAULT_SLICES_PER_FRAME),
 };

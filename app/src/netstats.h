@@ -16,13 +16,18 @@ typedef struct {
     bool lost_before[NET_HISTORY];    /* frames were lost just before this one */
 } NetStats;
 
+/* An H.264 stream by what it asks of the decoder: the deblocking filter and sub-pixel motion (STREAM_FULL, what
+ * hardware encoders send), sub-pixel motion only, or neither (STREAM_LEAN: x264's ultrafast preset). */
+enum { STREAM_UNKNOWN, STREAM_FULL, STREAM_NO_DEBLOCK, STREAM_LEAN };
+
 typedef struct {
     bool ready;                 /* a second of the stream measured */
     float fps, target_fps;      /* frames shown a second, and the stream's rate */
     int width, height;
     int cabac;                  /* 1 CABAC, 0 CAVLC, -1 not known yet */
-    bool fast_decode, gpu_decode;
-    float gpu_ms, replay_ms;    /* GPU decoding's two parts, a frame */
+    bool mpeg2;                 /* the stream is MPEG-2, not H.264 */
+    int stream_kind;            /* STREAM_UNKNOWN, STREAM_FULL, STREAM_NO_DEBLOCK or STREAM_LEAN */
+    bool fast_decode;
     /* Latency in ms, last second's average: the PC's capture and encode (-1: the host doesn't say), network, decode,
      * display (-1: not measured yet). */
     float host_ms, net_ms, decode_ms, display_ms;

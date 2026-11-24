@@ -45,11 +45,6 @@ TARGETS = {
         "launch": "decbench_vmx.xex",
         "files": {"decbench_vmx.xex": ROOT / "build/bench-xsdk/decbench_vmx.xex"},
     },
-    # The hybrid decoder (FFmpeg parses, the GPU predicts) against plain decoding (dev/bench/xsdk/hybench.c).
-    "hybench": {
-        "launch": "hybench.xex",
-        "files": {"hybench.xex": ROOT / "build/bench-xsdk/hybench.xex"},
-    },
     "moonlight360": {
         "launch": "moonlight360.xex",
         "files": {"moonlight360.xex": ROOT / "build/app/dist/moonlight360.xex"},

@@ -12,6 +12,8 @@ extern DECODER_RENDERER_CALLBACKS video_callbacks;
 
 /* Before a stream starts: skip the deblocking filter or not. */
 void video_set_fast_decode(bool fast);
+/* Before a stream starts: the slices a frame asked of the host (6, 12, 24 or 48; default 24). */
+void video_set_slices(int slices);
 /* Before a stream starts: false receives video but never decodes it (a network test). */
 void video_set_decode_enabled(bool enabled);
 /* Before a stream starts: the decode threads' priority (default 0). */
@@ -37,9 +39,11 @@ typedef struct {
     uint32_t errors;       /* decode errors (each asks the host for an IDR frame) */
     float decode_ms_avg;   /* average decode time over the last second */
     int cabac;             /* entropy coding the host's stream uses: 1 CABAC, 0 CAVLC, -1 not seen yet */
+    bool mpeg2;            /* the host's stream is MPEG-2 (no entropy coder to tell apart, no deblocking) */
+    /* What an H.264 stream leaves the decoder to do, read from the stream itself: STREAM_LEAN costs the console
+     * about half of STREAM_FULL (decbench: 11.9 against 23.1 ms a 1080p frame at 11.5 Mbit/s). */
+    int stream_kind;
     bool fast_decode;
-    bool gpu_decode;       /* experimental GPU decoding is running */
-    float gpu_ms, replay_ms;   /* with it: the GPU's part and the CPU's replay, last second's average a frame */
     /* Latency, last second's average a decoded frame, in ms: the host's capture and encode (-1 if it doesn't say),
      * first to last packet of a frame, and frame complete to decoded (queue included). */
     float host_ms, receive_ms, decode_latency_ms;

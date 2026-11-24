@@ -16,10 +16,23 @@ typedef enum {
     SESSION_ENDED,      /* the stream ended; text says why */
 } SessionState;
 
+/* Where a connection has got to, for the progress screen. */
+typedef enum {
+    SESSION_STEP_REACH,       /* keys, then the host's status */
+    SESSION_STEP_PAIR,        /* skipped (done at once) if already paired */
+    SESSION_STEP_START_APP,   /* find the app, close another, launch */
+    SESSION_STEP_STREAM,      /* moonlight-common-c's connection stages */
+    SESSION_STEP_PICTURE,     /* streaming, waiting for the first frame (main.c) */
+    SESSION_STEPS,
+} SessionStep;
+
 typedef struct {
     SessionState state;
+    SessionStep step;
     char text[512];
     char pin[8];        /* while pairing: the PIN to enter on the host */
+    char mac[18];       /* the PC's MAC address as it reported it, once it has (main.c keeps it for Wake-on-LAN) */
+    int app_id;         /* the host's id for the app, once found (main.c keeps it, for its cover) */
 } SessionView;
 
 void session_start(const Config *config);

@@ -21,7 +21,7 @@ bool config_load(const char *path, Config *c)
     strcpy(c->app, "Desktop");
     c->width = 1280;
     c->height = 720;
-    c->fps = 30;
+    c->fps = 60;   /* 720p60 by default: the console decodes it comfortably */
     c->bitrate_kbps = 8000;
     c->stats_mode = STATS_COMPACT;
     c->decode = true;
@@ -35,11 +35,28 @@ bool config_load(const char *path, Config *c)
      * ~75 a second, it ran). */
     c->audio_packet_ms = 20;
     c->audio_on_host = false;
-    c->gpu_decode = false;
-    c->low_latency = false;
+    c->low_latency = true;
+    c->fast_decode = false;
     c->net_priority = 2;
     c->decode_priority = 0;
     c->packet_size = 1392;
+    c->slices = 24;
+    c->codec = CODEC_H264;
+    c->logging = false;
+    c->ui_sounds = true;
+    c->theme = 0;
+    c->auto_resume = false;
+    c->show_recent = true;
+    c->hud_corner = HUD_TOP_LEFT;
+    c->hud_size = HUD_MEDIUM;
+    c->rumble = true;
+    c->wake_on_lan = false;
+    c->host_mac[0] = 0;
+    c->app_id = 0;
+    for (int i = 0; i < CONFIG_RECENT; i++) {
+        c->recent_id[i] = 0;
+        c->recent_name[i][0] = 0;
+    }
 
     FILE *f = fopen(path, "r");
     if (!f)
@@ -77,8 +94,39 @@ bool config_load(const char *path, Config *c)
             c->decode = atoi(value) != 0;
         else if (!strcmp(key, "draw"))
             c->draw = atoi(value) != 0;
-        else if (!strcmp(key, "gpu_decode"))
-            c->gpu_decode = atoi(value) != 0;
+        else if (!strcmp(key, "logging"))
+            c->logging = atoi(value) != 0;
+        else if (!strcmp(key, "sounds"))
+            c->ui_sounds = atoi(value) != 0;
+        else if (!strcmp(key, "theme"))
+            c->theme = atoi(value);
+        else if (!strcmp(key, "auto_resume"))
+            c->auto_resume = atoi(value) != 0;
+        else if (!strcmp(key, "show_recent"))
+            c->show_recent = atoi(value) != 0;
+        else if (!strcmp(key, "hud_corner")) {
+            const int v = atoi(value);
+            c->hud_corner = v >= 0 && v < HUD_CORNERS ? v : HUD_TOP_LEFT;
+        } else if (!strcmp(key, "hud_size")) {
+            const int v = atoi(value);
+            c->hud_size = v >= 0 && v < HUD_SIZES ? v : HUD_MEDIUM;
+        } else if (!strcmp(key, "rumble"))
+            c->rumble = atoi(value) != 0;
+        else if (!strcmp(key, "wake_on_lan"))
+            c->wake_on_lan = atoi(value) != 0;
+        else if (!strcmp(key, "host_mac"))
+            snprintf(c->host_mac, sizeof c->host_mac, "%s", value);
+        else if (!strcmp(key, "app_id"))
+            c->app_id = atoi(value);
+        else if (!strncmp(key, "recent", 6) && key[6] >= '1' && key[6] < '1' + CONFIG_RECENT && !key[7]) {
+            /* "recent1=12345|Name" */
+            const int i = key[6] - '1';
+            const char *bar = strchr(value, '|');
+            if (bar) {
+                c->recent_id[i] = atoi(value);
+                snprintf(c->recent_name[i], sizeof c->recent_name[i], "%s", bar + 1);
+            }
+        }
         else if (!strcmp(key, "low_latency"))
             c->low_latency = atoi(value) != 0;
         else if (!strcmp(key, "audio_on_host"))
@@ -94,6 +142,12 @@ bool config_load(const char *path, Config *c)
             int v = atoi(value);
             c->packet_size = v == 1024 ? 1024 : 1392; /* 512/256 flood the Wi-Fi with tiny packets: reset */
         }
+        else if (!strcmp(key, "slices")) {
+            int v = atoi(value);
+            c->slices = (v == 6 || v == 12 || v == 48) ? v : 24;
+        }
+        else if (!strcmp(key, "codec"))
+            c->codec = !strcmp(value, "mpeg2") ? CODEC_MPEG2 : CODEC_H264;
     }
     fclose(f);
     return c->host[0] != '\0';
@@ -125,8 +179,6 @@ bool config_save(const char *path, const Config *c)
             "audio_packet_ms=%d\n"
             "# audio_on_host=1 plays sound on the PC (the host still sends the audio stream)\n"
             "audio_on_host=%d\n"
-            "# gpu_decode=1: experimental GPU decoding (the GPU predicts each frame; no deblocking)\n"
-            "gpu_decode=%d\n"
             "# low_latency=1: draws each frame as soon as it is decoded (up to a refresh sooner on the TV)\n"
             "low_latency=%d\n"
             "# test switches: decode=0 receives video without decoding it, draw=0 decodes but never draws\n"
@@ -134,9 +186,75 @@ bool config_save(const char *path, const Config *c)
             "# thousands of small packets a second make the console's Wi-Fi stop receiving until reboot\n"
             "decode=%d\n"
             "draw=%d\n"
-            "packet_size=%d\n",
+            "packet_size=%d\n"
+            "# slices: 6, 12, 24 or 48 a frame. With more slices than the 6 decode threads, a thread that finishes\n"
+            "# an easy slice takes the next one, so a frame with all its detail in one place decodes faster\n"
+            "slices=%d\n"
+            "# codec: h264 or mpeg2. MPEG-2 is lighter to decode but needs a Sunshine host with mpeg2_mode = 2 and a\n"
+            "# higher bitrate for the same picture; any other host sends H.264\n"
+            "codec=%s\n"
+            "# logging=1 writes moonlight360.log beside the .xex, for finding problems\n"
+            "logging=%d\n"
+            "# sounds=1: soft clicks in the menus\n"
+            "sounds=%d\n"
+            "# theme: the menus' accent colour, 0 orange, 1 blue, 2 violet, 3 pink\n"
+            "theme=%d\n"
+            "# auto_resume=1: on start, reconnect to the last app straight away\n"
+            "auto_resume=%d\n"
+            "# hud_corner: where the stats HUD sits, 0 top left, 1 top right, 2 bottom left, 3 bottom right\n"
+            "hud_corner=%d\n"
+            "# hud_size: the stats HUD's size, 0 small (70%%), 1 medium (80%%), 2 large (100%%)\n"
+            "hud_size=%d\n"
+            "# rumble=0: the PC's controller rumble isn't passed on to the pads\n"
+            "rumble=%d\n"
+            "# wake_on_lan=1: wake the PC with a magic packet to host_mac (the PC reports it) before connecting\n"
+            "wake_on_lan=%d\n"
+            "host_mac=%s\n"
+            "# app_id: the host's id for app (for its cover); recent1-4: apps streamed lately, \"id|name\"\n"
+            "app_id=%d\n"
+            "# show_recent=0 hides the Play tab's Recent row\n"
+            "show_recent=%d\n",
             c->host, c->app, c->width, c->height, c->fps, c->bitrate_kbps, c->stats_mode,
-            c->fast_decode ? 1 : 0, c->audio_packet_ms, c->audio_on_host ? 1 : 0, c->gpu_decode ? 1 : 0, c->low_latency ? 1 : 0, c->decode ? 1 : 0, c->draw ? 1 : 0, c->packet_size);
+            c->fast_decode ? 1 : 0, c->audio_packet_ms, c->audio_on_host ? 1 : 0, c->low_latency ? 1 : 0, c->decode ? 1 : 0, c->draw ? 1 : 0, c->packet_size, c->slices,
+            c->codec == CODEC_MPEG2 ? "mpeg2" : "h264", c->logging ? 1 : 0, c->ui_sounds ? 1 : 0, c->theme, c->auto_resume ? 1 : 0, c->hud_corner, c->hud_size,
+            c->rumble ? 1 : 0, c->wake_on_lan ? 1 : 0, c->host_mac, c->app_id,
+            c->show_recent ? 1 : 0);
+    for (int i = 0; i < CONFIG_RECENT && c->recent_name[i][0]; i++)
+        fprintf(f, "recent%d=%d|%s\n", i + 1, c->recent_id[i], c->recent_name[i]);
     fclose(f);
     return true;
+}
+
+void config_add_recent(Config *c, int id, const char *name)
+{
+    int keep_id[CONFIG_RECENT];
+    char keep_name[CONFIG_RECENT][64];
+    int n = 0;
+    for (int i = 0; i < CONFIG_RECENT && c->recent_name[i][0] && n < CONFIG_RECENT - 1; i++)
+        if (strcmp(c->recent_name[i], name) != 0) {
+            keep_id[n] = c->recent_id[i];
+            snprintf(keep_name[n], sizeof keep_name[n], "%s", c->recent_name[i]);
+            n++;
+        }
+    c->recent_id[0] = id;
+    snprintf(c->recent_name[0], sizeof c->recent_name[0], "%.63s", name);   /* longer names are cut */
+    for (int i = 0; i < CONFIG_RECENT - 1; i++) {
+        c->recent_id[i + 1] = i < n ? keep_id[i] : 0;
+        if (i < n)
+            snprintf(c->recent_name[i + 1], sizeof c->recent_name[i + 1], "%.63s", keep_name[i]);
+        else
+            c->recent_name[i + 1][0] = 0;
+    }
+}
+
+void config_remove_recent(Config *c, int i)
+{
+    if (i < 0 || i >= CONFIG_RECENT)
+        return;
+    for (int k = i; k < CONFIG_RECENT - 1; k++) {
+        c->recent_id[k] = c->recent_id[k + 1];
+        memcpy(c->recent_name[k], c->recent_name[k + 1], sizeof c->recent_name[k]);
+    }
+    c->recent_id[CONFIG_RECENT - 1] = 0;
+    c->recent_name[CONFIG_RECENT - 1][0] = 0;
 }

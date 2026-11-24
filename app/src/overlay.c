@@ -99,7 +99,7 @@ void overlay_draw(uint32_t width, uint32_t height, const char *app, int stats_mo
     gfx_text(left, (int32_t)y + 30, 2, THEME_TEXT, "Stream menu");
     char line[96];
     gfx_fit(line, sizeof line, app, 40);
-    gfx_text(left, (int32_t)y + 74, 1, THEME_TEXT_3, line);
+    gfx_text(left, (int32_t)y + 74, 1, THEME_ACCENT_TEXT, line);
 
     char quit[112];
     gfx_fit(line, sizeof line, app, 14);
@@ -114,15 +114,22 @@ void overlay_draw(uint32_t width, uint32_t height, const char *app, int stats_mo
                                  "Closes the app on the PC, then returns to the main menu." };
     float by = y + 116.0f;
     const float bw = CARD_W - 64.0f;
+    /* The highlight slides to the selected button (about 120 ms); it starts there when the menu opens. */
+    static float slide_y;
+    static uint32_t slide_frame;
+    const float target = by + (float)selected * (BUTTON_H + BUTTON_GAP);
+    const float d = target - slide_y;
+    slide_y = gfx_frame() - slide_frame > 2 || (d > -0.5f && d < 0.5f) ? target : slide_y + d * 0.33f;
+    slide_frame = gfx_frame();
+    gfx_rect((float)left, slide_y, bw, BUTTON_H, 14.0f, selected == ITEM_QUIT ? 0xFFC8443C : THEME_ACCENT);
     for (int i = 0; i < ITEMS; i++, by += BUTTON_H + BUTTON_GAP) {
         const bool on = i == selected;
-        if (on)
-            gfx_rect((float)left, by, bw, BUTTON_H, 14.0f, i == ITEM_QUIT ? 0xFFC8443C : THEME_ACCENT);
+        const uint32_t ink = i == ITEM_QUIT ? THEME_TEXT : THEME_ON_ACCENT;   /* white on red, black on orange */
         gfx_text(left + 22, (int32_t)by + (BUTTON_H - 40) / 2, 2,
-                 on ? THEME_TEXT : i == ITEM_QUIT ? 0xFFE58A84 : THEME_TEXT_2, labels[i]);
+                 on ? ink : i == ITEM_QUIT ? 0xFFFF8A80 : THEME_TEXT_2, labels[i]);
         if (i == ITEM_STATS && on) {   /* arrows: left and right change it */
-            gfx_text(left + (int32_t)bw - 48, (int32_t)by + (BUTTON_H - 20) / 2, 1, THEME_TEXT, "\xE2\x97\x80");
-            gfx_text(left + (int32_t)bw - 26, (int32_t)by + (BUTTON_H - 20) / 2, 1, THEME_TEXT, "\xE2\x96\xB6");
+            gfx_text(left + (int32_t)bw - 48, (int32_t)by + (BUTTON_H - 20) / 2, 1, ink, "\xE2\x97\x80");
+            gfx_text(left + (int32_t)bw - 26, (int32_t)by + (BUTTON_H - 20) / 2, 1, ink, "\xE2\x96\xB6");
         }
     }
     char wrapped[160];

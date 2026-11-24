@@ -4,7 +4,7 @@
  * Opens on a settings menu (saved to moonlight.ini beside the .xex). Connect pairs with Sunshine (showing a PIN),
  * launches the app and streams it:
  * H.264 decoded by FFmpeg on the CPU, drawn with the GPU; Opus audio; controllers 1-4 sent to the host.
- * Hold Back + Start for a second while streaming for the stream menu (resume, main menu, quit the app on the PC). The log is moonlight360.log beside the .xex.
+ * Hold Back for a second while streaming for the stream menu (resume, main menu, quit the app on the PC). The log is moonlight360.log beside the .xex.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,11 +14,12 @@
 
 #include <libavcodec/avcodec.h>
 
+#include "apps.h"
 #include "audio.h"
 #include "devreturn.h"
+#include "discover.h"
 #include "diag.h"
 #include "gfx.h"
-#include "gpudec.h"
 #include "perf.h"
 #include "config.h"
 #include "input.h"
@@ -29,6 +30,7 @@
 #include "render.h"
 #include "session.h"
 #include "ui.h"
+#include "uisound.h"
 #include "video.h"
 #include "xsdk/gpu.h"
 #include "xsdk/kernel.h"
@@ -46,13 +48,13 @@ enum {
     BEGIN_TIMEOUT_MS = 5000,
 
     /* Held for MENU_HOLD_MS while streaming: opens the stream menu. */
-    MENU_COMBO = INPUT_GAMEPAD_BACK | INPUT_GAMEPAD_START,
+    MENU_COMBO = INPUT_GAMEPAD_BACK,
     MENU_HOLD_MS = 1000,
 };
 
 /* The menus' background (theme.h THEME_BG): each resolve clears the target to it for the next frame, so the background
  * needs no draw at all. */
-static const uint32_t CLEAR_ARGB = 0xFF0C1016;
+static const uint32_t CLEAR_ARGB = 0xFF0E0E10;
 
 /* XAM's network starts with 32 TCP sockets, 8 UDP and 16 KB buffers. Every pairing/launch request and every RTSP
  * message opens a new TCP connection, and closed ones can linger, so a second connection attempt could run out;
@@ -274,10 +276,9 @@ static void stats_update(HudStats *hud, uint32_t shown_frames, const Config *con
         .width = config->width,
         .height = config->height,
         .cabac = v.cabac,
+        .mpeg2 = v.mpeg2,
+        .stream_kind = v.stream_kind,
         .fast_decode = v.fast_decode,
-        .gpu_decode = v.gpu_decode,
-        .gpu_ms = v.gpu_ms,
-        .replay_ms = v.replay_ms,
         .host_ms = v.host_ms,
         .net_ms = net_ms,
         .decode_ms = v.decode_latency_ms,
@@ -304,8 +305,9 @@ static void stats_update(HudStats *hud, uint32_t shown_frames, const Config *con
                  "[I] stats: decode %.0f fps (%.1f ms)  shown %.0f fps  dropped %u  errors %u  audio gaps %u  %s%s%s"
                  "  ping %d ms (+-%d)  loss %.1f%% (%u frames)\n[I] stats: %s\n",
                  decoded_fps, v.decode_ms_avg, shown_fps, (unsigned)v.dropped, (unsigned)v.errors,
-                 (unsigned)a.silent_frames, v.cabac < 0 ? "" : v.cabac ? "CABAC" : "CAVLC",
-                 v.fast_decode ? "  fast decode" : "", v.gpu_decode ? "  GPU decoding" : "", net.rtt_ms,
+                 (unsigned)a.silent_frames, v.mpeg2 ? "MPEG-2" : v.cabac < 0 ? "" : v.cabac ? "CABAC" : "CAVLC",
+                 v.stream_kind == STREAM_LEAN ? " lean" : v.stream_kind == STREAM_NO_DEBLOCK ? " no-deblock" : "",
+                 v.fast_decode ? "  fast decode" : "", net.rtt_ms,
                  net.rtt_var_ms, net.loss_pct, (unsigned)net.lost_frames, latency);
         stats_log_due = true;
     }
@@ -332,6 +334,23 @@ static int arg_int(const char *args, const char *key, int fallback)
     snprintf(pattern, sizeof pattern, "%s=", key);
     const char *p = strstr(args, pattern);
     return p ? atoi(p + strlen(pattern)) : fallback;
+}
+
+static bool log_forced;
+
+/* The Other tab's Logging: off drops every line from here on, on lets them through again. */
+static void apply_logging(const Config *c)
+{
+    static int was = -1;
+    const bool on = c->logging || log_forced;
+    if (on == was)
+        return;
+    if (!on)
+        printf("[I] log: off from here; Other > Logging turns it on\n");
+    logbuf_set_logging(on);
+    if (on && was != -1)
+        printf("[I] log: on again\n");
+    was = on;
 }
 
 static Autotest parse_autotest(Config *c)
@@ -366,6 +385,8 @@ static Autotest parse_autotest(Config *c)
         sscanf(host + 5, "%63s", c->host);
     }
     c->packet_size = arg_int(args, "packet", c->packet_size);
+    c->slices = arg_int(args, "slices", c->slices);
+    c->codec = arg_int(args, "mpeg2", c->codec == CODEC_MPEG2) ? CODEC_MPEG2 : CODEC_H264;
     c->bitrate_kbps = arg_int(args, "bitrate", c->bitrate_kbps);
     c->width = arg_int(args, "width", c->width);
     c->height = arg_int(args, "height", c->height);
@@ -377,7 +398,19 @@ static Autotest parse_autotest(Config *c)
     return t;
 }
 
-static void draw_status(uint32_t width, uint32_t height, const SessionView *view)
+static const char *const STEP_NAMES[SESSION_STEPS] = { "Reach PC", "Pair", "Start app", "Stream", "Picture" };
+
+/* The connection's progress: its steps, the one under way with what it's doing. */
+static void draw_progress(uint32_t width, uint32_t height, const Config *config, SessionStep step, const char *detail)
+{
+    char title[96], subtitle[160];
+    gfx_fit(title, sizeof title, config->app, 22);
+    snprintf(subtitle, sizeof subtitle, "on %s  \xC2\xB7  %d\xC3\x97%d  \xC2\xB7  %d fps  \xC2\xB7  %d Mbps", config->host,
+             config->width, config->height, config->fps, config->bitrate_kbps / 1000);
+    ui_draw_progress(width, height, title, subtitle, STEP_NAMES, SESSION_STEPS, (int)step, detail);
+}
+
+static void draw_status(uint32_t width, uint32_t height, const SessionView *view, const Config *config, bool stopping)
 {
     if (view->state == SESSION_PAIRING && view->pin[0]) {
         ui_draw_status(width, height, "Pair with your PC",
@@ -387,7 +420,11 @@ static void draw_status(uint32_t width, uint32_t height, const SessionView *view
         return;
     }
     const bool busy = view->state == SESSION_WORKING || view->state == SESSION_IDLE;
-    ui_draw_status(width, height, busy ? "Connecting" : "Stopped", view->text, NULL, busy);
+    if (busy && !stopping) {
+        draw_progress(width, height, config, view->step, view->text);
+        return;
+    }
+    ui_draw_status(width, height, busy ? "Stopping" : "Stopped", view->text, NULL, busy);
 }
 
 /* Headless automatic test ("autotest ui=0 ..."): Moonlight's session with no GPU, display, text or controller
@@ -485,6 +522,9 @@ int main(void)
     menu_open(&config, CONFIG_PATH);
     bool in_session = false;          /* a session was started and hasn't come back to the menu yet */
     Autotest autotest = parse_autotest(&config);
+    /* An automatic test, or "log=1" in the dev server's arguments, logs whatever the setting says. */
+    log_forced = autotest.on || arg_int(devreturn_args(), "log", 0) != 0;
+    apply_logging(&config);
     render_set_tiled(autotest.tiled);
     if (config.input)
         input_start();   /* reads the pads ~1000 times a second and sends them while streaming (input.c) */
@@ -492,7 +532,12 @@ int main(void)
     bool autotest_stopped = false;
     int autotest_attempts = 1;
     enum { AUTOTEST_ATTEMPTS = 5, AUTOTEST_RETRY_MS = 10000 };
+    /* Reconnect on start: straight to the last app, as Start streaming would. */
+    bool reconnect = config.auto_resume && config.host[0] && config.app[0] && !autotest.on;
+    if (reconnect)
+        printf("[I] reconnecting to \"%s\" on %s on start\n", config.app, config.host);
     if (autotest.on) {
+        uisound_close();   /* no-op: never opened under a test */
         session_start(&config);
         in_session = true;
     }
@@ -515,12 +560,18 @@ int main(void)
             autotest_retry_at = 0;
             autotest_attempts++;
             menu_set_message(NULL);
+            uisound_close();
             session_start(&config);
             in_session = true;
         }
         SessionView view;
         session_get_view(&view);
         bool streaming = in_session && view.state == SESSION_STREAMING && !stopping;
+        /* The PC's MAC address, as it reported it: kept for Wake-on-LAN. */
+        if (in_session && view.mac[0] && strcmp(view.mac, config.host_mac) != 0) {
+            snprintf(config.host_mac, sizeof config.host_mac, "%s", view.mac);
+            config_save(CONFIG_PATH, &config);
+        }
 
         if (autotest.on && streaming && !autotest_stream_start)
             autotest_stream_start = now_ms();
@@ -578,14 +629,19 @@ int main(void)
         } else if (!streaming && was_streaming) {
             render_clear();
         }
+        if (streaming && !was_streaming && view.app_id > 0) {   /* streaming: the app goes to the front of Recent */
+            config.app_id = view.app_id;
+            config_add_recent(&config, view.app_id, config.app);
+            config_save(CONFIG_PATH, &config);
+        }
         if (streaming && !was_streaming) {   /* a new stream: no display latency yet */
             queued.decoded_us = 0;
             display.avg_ms = -1.0f;
             memset(&history, 0, sizeof history);
             refresh_reset();
-            printf("[I] stream settings: %dx%d@%d %d kbps, fast decode %d, GPU decoding %d, low-latency display %d, "
-                   "stats %d\n", config.width, config.height, config.fps, config.bitrate_kbps, config.fast_decode,
-                   config.gpu_decode, config.low_latency, config.stats_mode);
+            printf("[I] stream settings: %dx%d@%d %d kbps, fast decode %d, low-latency display %d, stats %d\n",
+                   config.width, config.height, config.fps, config.bitrate_kbps, config.fast_decode,
+                   config.low_latency, config.stats_mode);
         }
         was_streaming = streaming;
 
@@ -615,14 +671,13 @@ int main(void)
                 refresh.target_vblank = vblank + 1;
             }
         }
-        gpudec_service();   /* GPU decoding's work for the decode thread, before this frame's drawing */
         xsdk_gpu_set_target(width, height);
         gfx_frame_begin(width, height);
         perf_gpu_frame_begin();
         if (streaming) {
             if (!render_draw(width, height))
-                ui_draw_status(width, height, "Starting the stream", "Waiting for the first frame from the PC\xE2\x80\xA6",
-                               NULL, true);
+                draw_progress(width, height, &config, SESSION_STEP_PICTURE,
+                              "Waiting for the first frame from the PC\xE2\x80\xA6");
             static HudStats hud;
             stats_update(&hud, shown_frames, &config);
             /* Load into the graph's ring whenever a new sample came (twice a second), HUD shown or not. */
@@ -644,14 +699,15 @@ int main(void)
             if (config.stats_mode != STATS_OFF) {
                 static NetStats net;   /* 90 arrivals: off the stack */
                 net_stats(&net);
-                ui_draw_stats(config.stats_mode, &hud, &perf, &net, &history);
+                ui_draw_stats(config.stats_mode, config.hud_corner, config.hud_size, &hud, &perf, &net, &history);
             }
             overlay_draw(width, height, config.app, config.stats_mode);
         } else if (in_session) {
-            draw_status(width, height, &view);
+            draw_status(width, height, &view, &config, stopping);
         } else {
             menu_draw(width, height);
         }
+        gfx_flush();
         xsdk_gpu_resolve(address, width, height, CLEAR_ARGB);
         perf_gpu_frame_end();
         xsdk_present_end();
@@ -710,11 +766,22 @@ int main(void)
             if (any_pressed(&input, INPUT_GAMEPAD_BACK))
                 running = false;
         } else {
-            switch (menu_update(&input)) {
+            apply_logging(&config);   /* the menu may have just switched it */
+            /* The menus' sounds have the audio output while no session runs (and the setting is on). */
+            if (config.ui_sounds && !autotest.on)
+                uisound_open();
+            else
+                uisound_close();
+            const MenuAction action = reconnect ? MENU_CONNECT : menu_update(&input);
+            reconnect = false;
+            switch (action) {
             case MENU_CONNECT:
                 menu_set_message(NULL);
                 printf("[I] host %s, app \"%s\", %dx%d %d fps %d kbps\n", config.host, config.app, config.width,
                        config.height, config.fps, config.bitrate_kbps);
+                uisound_close();   /* the stream's audio takes the console's one audio output */
+                apps_stop_covers();   /* the stream should have the Wi-Fi to itself */
+                discover_stop();
                 session_start(&config);
                 in_session = true;
                 stopping = false;
@@ -733,6 +800,7 @@ int main(void)
     session_get_view(&view);
     if (view.state != SESSION_WORKING && view.state != SESSION_PAIRING)
         session_stop();
+    uisound_close();
     logbuf_end();
     render_shutdown();
     gfx_shutdown();

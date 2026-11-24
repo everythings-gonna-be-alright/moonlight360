@@ -5,9 +5,14 @@
  * common (2026-11-22): so during a session lines go to RAM, and reach the file once the session is over. */
 #pragma once
 #include <stdbool.h>
+#include <stddef.h>
 
 /* false: lines always go straight to the file, as before (for A/B tests). Default true. */
 void logbuf_set_enabled(bool enabled);
+/* false: every line is dropped, nothing reaches the file or memory (the Other tab's Logging, off by default). */
+void logbuf_set_logging(bool on);
+/* The newest log text (up to 8 KB, while logging is on) into out, NUL-terminated; returns its length. Any thread. */
+size_t logbuf_recent(char *out, size_t size);
 /* From now on lines are kept in memory. */
 void logbuf_begin(void);
 /* Writes what was kept to the file; lines go straight to the file again. */

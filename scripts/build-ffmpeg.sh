@@ -10,6 +10,8 @@ if git apply --reverse --check /work/patches/ffmpeg-xenon-vmx128.patch 2>/dev/nu
 XSDK=/work/third_party/xsdk
 TC=/opt/xsdk-gcc/bin/powerpc-xsdk-elf-
 mkdir -p /work/build/ffmpeg-xsdk-vmx && cd /work/build/ffmpeg-xsdk-vmx
+# A build configured before MPEG-2 was added is configured again.
+grep -qs 'define CONFIG_MPEG2VIDEO_DECODER 1' config_components.h || rm -f config.h
 if [ ! -f config.h ]; then
 /work/third_party/ffmpeg/configure \
   --prefix=/work/build/prefix-xsdk-vmx \
@@ -19,7 +21,7 @@ if [ ! -f config.h ]; then
   --disable-network --enable-pthreads --disable-w32threads --disable-os2threads \
   --disable-debug --disable-runtime-cpudetect --enable-static --disable-shared \
   --enable-altivec --disable-vsx --disable-power8 \
-  --enable-decoder=h264 --enable-parser=h264 \
+  --enable-decoder=h264 --enable-parser=h264 --enable-decoder=mpeg2video --enable-parser=mpegvideo \
   --extra-cflags="-mcpu=cell -fno-pic -O3 -I$XSDK/include" \
   --extra-ldflags="-static -nostdlib -T $XSDK/src/xsdk.ld" \
   --extra-libs="-Wl,--start-group -lstdc++ $XSDK/build/libxsdk.a -lc -lm -lgcc -Wl,--end-group" \

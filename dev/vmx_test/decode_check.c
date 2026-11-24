@@ -1,6 +1,7 @@
 /* Decodes an H.264 clip and prints a checksum of every frame's pixels: run on the PC and, built for PowerPC with the
  * Xenon vector code, under QEMU, the two must print the same (dev/vmx_test/decode.sh).
- * Usage: decode_check clip.h264 threads [skip-deblocking 0/1] [chroma-in-C 0/1] */
+ * Usage: decode_check clip.h264|clip.m2v threads [skip-deblocking 0/1] [chroma-in-C 0/1]
+ * A .m2v clip is MPEG-2; anything else H.264. */
 #include <libavcodec/avcodec.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,7 +22,10 @@ int main(int argc, char **argv)
         return 2;
     memset(data + n, 0, 64);
     ff_xenon_chroma_c = argc > 4 && atoi(argv[4]);
-    const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+    const size_t name_len = strlen(argv[1]);
+    const enum AVCodecID id = name_len > 4 && !strcmp(argv[1] + name_len - 4, ".m2v") ? AV_CODEC_ID_MPEG2VIDEO
+                                                                                        : AV_CODEC_ID_H264;
+    const AVCodec *codec = avcodec_find_decoder(id);
     AVCodecContext *c = avcodec_alloc_context3(codec);
     c->thread_count = atoi(argv[2]);
     c->thread_type = FF_THREAD_SLICE;
@@ -29,7 +33,7 @@ int main(int argc, char **argv)
         c->skip_loop_filter = AVDISCARD_ALL;
     if (avcodec_open2(c, codec, NULL) < 0)
         return 2;
-    AVCodecParserContext *p = av_parser_init(AV_CODEC_ID_H264);
+    AVCodecParserContext *p = av_parser_init(id);
     AVPacket *pkt = av_packet_alloc();
     AVFrame *fr = av_frame_alloc();
     const uint8_t *d = data;
