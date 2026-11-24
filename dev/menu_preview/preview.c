@@ -307,9 +307,9 @@ void config_remove_recent(Config *c, int i)
 
 /* The PC's apps: Sunshine's defaults and some games, with their covers (dev/menu_preview/covers); the last has
  * none, for the initial in its place. */
-static const char *const fake_apps[] = { "Desktop", "Steam Big Picture", "Red Dead Redemption 2", "Grand Theft Auto V",
+static const char *const fake_apps[] = { "Desktop", "Steam Big Picture", "Red Dead Redemption 2", "Grand Theft Auto VI",
                                          "Cyberpunk 2077", "Elden Ring", "Forza Horizon 5", "Retro Arcade" };
-static const char *const fake_covers[] = { "desktop.png", "steam.png", "rdr2.jpg", "gta5.jpg", "cyberpunk.jpg",
+static const char *const fake_covers[] = { "desktop.png", "steam.png", "rdr2.jpg", "gta6.png", "cyberpunk.jpg",
                                            "eldenring.jpg", "forza5.jpg", NULL };
 static AppsState fake_state = APPS_READY;
 void apps_fetch(const char *host) { (void)host; }
@@ -512,30 +512,6 @@ static void fake_game(void)
 
 /* ---- the README's tour (menu_preview <dir> tour) ---- */
 
-/* The game, as the stream would show it: dev/menu_preview/covers/stream.jpg (the landscape if it isn't there). */
-static void game_frame(void)
-{
-    static uint8_t *picture;
-    static bool tried;
-    if (!tried) {
-        tried = true;
-        FILE *f = fopen("dev/menu_preview/covers/stream.jpg", "rb");
-        if (f) {
-            static uint8_t data[1 << 21];
-            const size_t n = fread(data, 1, sizeof data, f);
-            fclose(f);
-            picture = image_decode_fit(data, n, W, H);
-        }
-    }
-    if (!picture) {
-        fake_game();
-        return;
-    }
-    for (int y = 0; y < H; y++)
-        for (int x = 0; x < W; x++)
-            for (int k = 0; k < 3; k++)
-                fb[y][x][k] = picture[((size_t)y * W + x) * 4 + k] / 255.0f;
-}
 
 /* Every how many of the menus' 60 frames a second one is written: 1, all of them (60 a second); 2, 30 a second. */
 static int tour_stride = 1;
@@ -655,7 +631,7 @@ static void tour_connect(const char *dir, int *frame, int *written)
             continue;
         clear();
         if (streaming) {
-            game_frame();
+            fake_game();
             gfx_frame_begin(W, H);
             ui_draw_stats(STATS_DETAILED, HUD_TOP_LEFT, HUD_MEDIUM, &hud, &perf, &net, &hist);
             const int left = CONNECT + STREAM - f;
@@ -690,7 +666,7 @@ int main(int argc, char **argv)
                             .packet_size = 1392, .slices = 24, .app_id = 3, .low_latency = true, .stats_mode = 1,
                             .ui_sounds = true, .rumble = true, .show_recent = true,
                             .recent_id = { 3, 5, 4, 7 },
-                            .recent_name = { "Red Dead Redemption 2", "Cyberpunk 2077", "Grand Theft Auto V",
+                            .recent_name = { "Red Dead Redemption 2", "Cyberpunk 2077", "Grand Theft Auto VI",
                                              "Forza Horizon 5" } };
         menu_open(&c, "moonlight.ini");
         int frame = 0, written = 0;
@@ -749,7 +725,7 @@ int main(int argc, char **argv)
                              .bitrate_kbps = 20000, .fast_decode = false, .decode = true, .draw = true,
                              .audio_packet_ms = 20, .packet_size = 1392, .slices = 24, .app_id = 3,
                              .recent_id = { 3, 5, 4, 7 }, .show_recent = true,
-                             .recent_name = { "Red Dead Redemption 2", "Cyberpunk 2077", "Grand Theft Auto V",
+                             .recent_name = { "Red Dead Redemption 2", "Cyberpunk 2077", "Grand Theft Auto VI",
                                               "Forza Horizon 5" } };
     snprintf(config.app, sizeof config.app, "Red Dead Redemption 2");
     menu_open(&config, "moonlight.ini");
