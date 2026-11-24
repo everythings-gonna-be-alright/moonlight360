@@ -594,8 +594,8 @@ static void tour_card(const char *dir, int frames, const char *line1, const char
     }
 }
 
-/* Connecting: Reach PC, the first time's pairing with its PIN, the other steps; then the game with the detailed stats,
- * their graphs running on. */
+/* Connecting: the first time's pairing with its PIN, then the connection's steps; then the game with the detailed
+ * stats, their graphs running on. */
 static void tour_connect(const char *dir, int *frame, int *written)
 {
     static const char *const step_names[] = { "Reach PC", "Pair", "Start app", "Stream", "Picture" };
@@ -611,7 +611,8 @@ static void tour_connect(const char *dir, int *frame, int *written)
     PerfReadings perf;
     perf_get(&perf);
     /* Reach PC; the PIN, held; the other steps, quick; the stream, held, fading out at its end. */
-    enum { REACH = 36, PAIRING = 110, STEP = 24, CONNECT = REACH + PAIRING + 4 * STEP, STREAM = 190, FADE = 18 };
+    /* The pairing with its PIN first; then the connection, Reach PC done, each step after it in turn; the stream. */
+    enum { PAIRING = 110, STEP = 26, CONNECT = PAIRING + 4 * STEP, STREAM = 190, FADE = 18 };
     char path[512];
     for (int f = 0; f < CONNECT + STREAM; f++, (*frame)++) {
         gfx_frame_begin(W, H);
@@ -637,13 +638,13 @@ static void tour_connect(const char *dir, int *frame, int *written)
             const int left = CONNECT + STREAM - f;
             if (left < FADE)   /* out to the background, for the menus to rise from */
                 gfx_rect(0.0f, 0.0f, W, H, 0.0f, (255u * (uint32_t)(FADE - left) / FADE) << 24 | 0x0E0E10);
-        } else if (f >= REACH && f < REACH + PAIRING) {
+        } else if (f < PAIRING) {
             ui_draw_status(W, H, "Pair with your PC",
                            "Open Sunshine's web UI on the PC, go to the PIN page and enter this code. "
                            "Name the device Xbox 360. This is needed once.",
                            "4827", true);
         } else {
-            const int step = f < REACH ? 0 : 1 + (f - REACH - PAIRING) / STEP;
+            const int step = 1 + (f - PAIRING) / STEP;
             ui_draw_progress(W, H, "Red Dead Redemption 2",
                              "on 192.168.1.100  \xC2\xB7  1920\xC3\x97" "1080  \xC2\xB7  60 fps  \xC2\xB7  30 Mbps",
                              step_names, 5, step, details[step]);
