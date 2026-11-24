@@ -28,6 +28,7 @@ enum {
     ITEM_BITRATE,
     ITEM_FAST_DECODE,
     ITEM_LOW_LATENCY,
+    ITEM_PICTURE,
     ITEM_STATS,
     ITEM_AUDIO_ON_HOST,
     ITEM_AUDIO_PACKETS,
@@ -57,7 +58,7 @@ enum {
     TAB_OTHER,
     TAB_ABOUT,   /* no rows: what the app is and its credits */
     TABS,
-    TAB_ITEMS_MAX = 9,
+    TAB_ITEMS_MAX = 10,
 };
 
 enum {
@@ -95,8 +96,8 @@ typedef struct {
 
 static const Tab tabs[TABS] = {
     { "Play", 3, { ITEM_CONNECT, ITEM_APP, ITEM_HOST } },
-    { "Video", 9, { ITEM_RESOLUTION, ITEM_FPS, ITEM_BITRATE, ITEM_CODEC, ITEM_LOW_LATENCY, ITEM_FAST_DECODE,
-                   ITEM_STATS, ITEM_HUD_CORNER, ITEM_HUD_SIZE } },
+    { "Video", 10, { ITEM_RESOLUTION, ITEM_PICTURE, ITEM_FPS, ITEM_BITRATE, ITEM_CODEC, ITEM_LOW_LATENCY,
+                    ITEM_FAST_DECODE, ITEM_STATS, ITEM_HUD_CORNER, ITEM_HUD_SIZE } },
     { "Network", 4, { ITEM_WAKE, ITEM_AUDIO_PACKETS, ITEM_PACKET_SIZE, ITEM_SLICES } },
     { "Other", 9, { ITEM_AUTO_RESUME, ITEM_SHOW_RECENT, ITEM_MENU_COMBO, ITEM_AUDIO_ON_HOST, ITEM_SOUNDS, ITEM_RUMBLE,
                     ITEM_THEME, ITEM_VIDEO_TEST, ITEM_LOGGING } },
@@ -249,7 +250,7 @@ static bool is_toggle(int item)
 {
     return item == ITEM_FAST_DECODE || item == ITEM_LOW_LATENCY || item == ITEM_DECODE ||
            item == ITEM_DRAW || item == ITEM_LOGGING || item == ITEM_SOUNDS || item == ITEM_AUTO_RESUME ||
-           item == ITEM_RUMBLE || item == ITEM_WAKE || item == ITEM_SHOW_RECENT;
+           item == ITEM_RUMBLE || item == ITEM_WAKE || item == ITEM_SHOW_RECENT || item == ITEM_PICTURE;
 }
 
 static void change(int item, int step)
@@ -281,6 +282,9 @@ static void change(int item, int step)
         break;
     case ITEM_LOW_LATENCY:
         config->low_latency = !config->low_latency;
+        break;
+    case ITEM_PICTURE:
+        config->picture_1080p = !config->picture_1080p;
         break;
     case ITEM_AUDIO_ON_HOST:
         config->audio_on_host = !config->audio_on_host;
@@ -607,7 +611,7 @@ static MenuAction activate(int item, uint32_t pad)
     }
 }
 
-MenuAction menu_update(const InputState *input)
+static MenuAction update(const InputState *input)
 {
     if (poll_keyboard())
         return MENU_NONE;
@@ -738,6 +742,28 @@ MenuAction menu_update(const InputState *input)
     return MENU_NONE;
 }
 
+/* Start streaming answers the press before the menu gives way to the connection's steps: the main button dips, springs
+ * back and glows (draw_play_tab), about a quarter of a second. */
+enum { LAUNCH_FRAMES = 16 };
+static bool launching;
+static uint32_t launch_frame;
+
+MenuAction menu_update(const InputState *input)
+{
+    if (launching) {
+        if (gfx_frame() - launch_frame < LAUNCH_FRAMES)
+            return MENU_NONE;
+        launching = false;
+        return MENU_CONNECT;
+    }
+    const MenuAction action = update(input);
+    if (action != MENU_CONNECT)
+        return action;
+    launching = true;
+    launch_frame = gfx_frame();
+    return MENU_NONE;
+}
+
 /* ---- drawing ---- */
 
 static bool message_is_error(const char *text)
@@ -835,6 +861,11 @@ static void item_help(int item, const char **help, const char **warning)
     case ITEM_FAST_DECODE:
         *help = "Skips H.264's deblocking filter: about 30% faster decoding, a slightly blockier picture. Needed for "
                 "1080p, unless the PC sends a lean stream (then leave it off).";
+        break;
+    case ITEM_PICTURE:
+        *help = "Draws a 1920x1080 picture, shown pixel for pixel on a 1080p TV, so a 1080p stream keeps all its "
+                "detail. Off, the picture is 1280x720 and the console scales it up. Takes effect the next time the "
+                "app starts.";
         break;
     case ITEM_LOW_LATENCY:
         *help = "Draws each frame the moment it's decoded instead of on a fixed beat, so it reaches the TV up to a "
@@ -1055,6 +1086,9 @@ static void draw_value(int item, int32_t right, int32_t y, int32_t cy, bool sele
     case ITEM_LOW_LATENCY:
         draw_switch(right, cy, config->low_latency);
         break;
+    case ITEM_PICTURE:
+        draw_switch(right, cy, config->picture_1080p);
+        break;
     case ITEM_STATS: {
         static const char *const names[STATS_MODES] = { "Off", "Compact", "Detailed" };
         draw_choice(right, y, names[config->stats_mode], selected, text);
@@ -1144,6 +1178,7 @@ static const char *item_label(int item)
     case ITEM_BITRATE: return "Bitrate";
     case ITEM_FAST_DECODE: return "Fast decode";
     case ITEM_LOW_LATENCY: return "Low-latency display";
+    case ITEM_PICTURE: return "1080p picture";
     case ITEM_STATS: return "Stats";
     case ITEM_AUDIO_ON_HOST: return "Sound plays on";
     case ITEM_AUDIO_PACKETS: return "Audio packets";
@@ -1179,6 +1214,7 @@ static Icon item_icon(int item)
     case ITEM_BITRATE: return ICON_BITRATE;
     case ITEM_FAST_DECODE: return ICON_FAST;
     case ITEM_LOW_LATENCY: return ICON_LATENCY;
+    case ITEM_PICTURE: return ICON_RESOLUTION;
     case ITEM_STATS: return ICON_STATS;
     case ITEM_AUDIO_ON_HOST: return ICON_SPEAKER;
     case ITEM_AUDIO_PACKETS: return ICON_WAVE;
@@ -1324,8 +1360,8 @@ static void draw_log(void)
 /* A small heading above row i of the tab, where a group starts, or NULL. */
 static const char *section_before(int t, int i)
 {
-    if (t == TAB_VIDEO)   /* Resolution, Frame rate, Bitrate, Codec | Low-latency, Fast decode | Stats, position, size */
-        return i == 0 ? "QUALITY" : i == 4 ? "PERFORMANCE" : i == 6 ? "STATS" : NULL;
+    if (t == TAB_VIDEO)   /* Resolution, 1080p picture, Frame rate, Bitrate, Codec | Low-latency, Fast decode | Stats... */
+        return i == 0 ? "QUALITY" : i == 5 ? "PERFORMANCE" : i == 7 ? "STATS" : NULL;
     if (t == TAB_OTHER)
         return i == 0 ? "GENERAL" : i == 3 ? "SOUND" : i == 6 ? "APPEARANCE" : i == 7 ? "DEBUG" : NULL;
     return NULL;
@@ -1572,9 +1608,24 @@ static void draw_play_tab(void)
     }
     y += 48;
 
-    /* The main button. */
+    /* The main button. Pressed, it dips for a third of the time, then springs back a little past its size while a
+     * glow of its colour spreads from it and a flash fades off it. */
     const float bx = (float)x, by = (float)y, bw = 440.0f, bh = 60.0f;
     const bool on = item == ITEM_CONNECT;
+    const float launch = launching ? (float)(gfx_frame() - launch_frame) / LAUNCH_FRAMES : -1.0f;
+    const float dip = 0.35f, spring = launch < dip ? 0.0f : (launch > 1.0f ? 1.0f : launch - dip) / (1.0f - dip);
+    if (launch >= 0.0f) {
+        const float down = launch < dip ? launch / dip : 1.0f, back = spring - 1.0f;
+        /* Down eases out; back overshoots (the "back" curve), ending at 1. */
+        const float size = launch < dip ? 1.0f - 0.07f * (1.0f - (1.0f - down) * (1.0f - down))
+                                        : 0.93f + 0.07f * (1.0f + 2.70158f * back * back * back + 1.70158f * back * back);
+        if (launch >= dip) {
+            const float spread = 8.0f + 26.0f * spring;
+            const uint32_t glow = (uint32_t)(150.0f * (1.0f - spring)) << 24 | (THEME_ACCENT & 0x00FFFFFF);
+            gfx_shadow(bx, by, bw, bh, bh / 2, spread, glow);
+        }
+        gfx_scale_begin(size, bx + bw / 2, by + bh / 2);
+    }
     if (on) {
         gfx_rect(bx, by, bw, bh, bh / 2, THEME_ACCENT);
     } else {
@@ -1586,6 +1637,11 @@ static void draw_play_tab(void)
                         : message[0] && message_is_error(message) ? "\xE2\x86\xBB  Try again"
                                                                   : ARROW_RIGHT "  Start streaming";
     gfx_text_center((int32_t)(bx + bw / 2), (int32_t)by + 10, 2, on ? THEME_ON_ACCENT : THEME_TEXT_2, label);
+    if (launch >= 0.0f) {
+        if (launch >= dip)
+            gfx_rect(bx, by, bw, bh, bh / 2, (uint32_t)(90.0f * (1.0f - spring)) << 24 | 0x00FFFFFF);
+        gfx_scale_end();
+    }
     y += (int32_t)bh + (message[0] ? 16 : 36);   /* closer with a message, so its box has room under them */
 
     /* App and host. */

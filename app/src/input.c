@@ -1,5 +1,6 @@
 #include "input.h"
 
+#include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -18,7 +19,32 @@ enum {
     INPUT_HW_THREAD = 1,
     INPUT_PRIORITY = 2,   /* as Moonlight's network threads: above the decode threads, so they can't hold it up */
     LOG_EVERY_S = 30,
+
+    /* Mouse mode. The pointer and the wheel go out at most this often: a stream shows 60 frames a second at best,
+     * and small packets are what the console's Wi-Fi handles badly. */
+    MOUSE_INTERVAL_US = 16000,
+    MOUSE_DEADZONE = 8000,       /* of 32767: a resting stick reads up to about 6000 */
+    MOUSE_SPEED = 1500,          /* the PC's pixels a second with the stick fully over; the square of the tilt below */
+    BOOST_AFTER_US = 250000,     /* the stick held fully over this long: the pointer speeds up, to cross the screen */
+    BOOST_OVER_US = 600000,      /* ... to twice the speed, over this long */
+    WHEEL_SPEED = 1200,          /* wheel units a second fully over: ten notches of 120 */
+    WHEEL_STEP = 30,             /* the least sent at once: a quarter notch */
+    TRIGGER_PRESSED = 100,       /* of 255 */
+    KEY_STEP_US = 30000,         /* between a shortcut's key events, so the PC sees Alt held before Tab */
+    GUIDE_HOLD_US = 200000,
+    KEY_QUEUE = 16,
 };
+
+/* Mouse mode's buttons and keys, as bits. A key held repeats on the PC by itself (Sunshine's key repeat). */
+enum { M_LEFT, M_RIGHT, M_UP, M_DOWN, M_KEY_LEFT, M_KEY_RIGHT, M_ENTER, M_ESC, M_BACKSPACE, M_TAB, M_COUNT };
+enum { VK_BACK = 0x08, VK_TAB = 0x09, VK_RETURN = 0x0D, VK_MENU = 0x12, VK_ESCAPE = 0x1B, VK_LEFT = 0x25, VK_UP,
+       VK_RIGHT, VK_DOWN, VK_D = 0x44, VK_LWIN = 0x5B, VK_F4 = 0x73 };
+
+typedef struct {
+    uint8_t vk;
+    bool down;
+    uint8_t modifiers;   /* MODIFIER_ flags held with this event */
+} KeyStep;
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static InputState latest;                   /* under lock */
@@ -31,6 +57,20 @@ static INPUT_GAMEPAD last_sent[INPUT_PADS];
 static bool sent_once[INPUT_PADS];
 static uint64_t last_analog_us[INPUT_PADS];
 static uint16_t previous_mask;
+
+/* Shortcuts waiting to go out, under lock. */
+static KeyStep key_queue[KEY_QUEUE];
+static int key_count;
+static uint64_t guide_until_us;   /* the Guide button reads as held until then */
+
+/* Mouse mode, touched by the input thread only (and input_reset). */
+static uint16_t mouse_sent;       /* M_ bits down on the PC */
+static uint16_t mouse_ignore;     /* M_ bits held when the mode began: nothing until they are let go */
+static float mouse_x, mouse_y, wheel;   /* movement not sent yet */
+static uint64_t mouse_last_us, mouse_sent_us;
+static uint64_t mouse_full_us;    /* how long the stick has been fully over */
+static atomic_int menu_buttons;   /* the stream menu's buttons: no keys of mouse mode's */
+static atomic_int pointer_speed = 1;
 
 static uint64_t now_us(void)
 {
@@ -94,6 +134,150 @@ static unsigned send_changes(const InputState *state, uint64_t now)
     return sent;
 }
 
+/* Presses and releases what differs from what the PC has. */
+static void mouse_apply(uint16_t want)
+{
+    static const uint8_t keys[M_COUNT] = { [M_UP] = VK_UP,           [M_DOWN] = VK_DOWN,     [M_KEY_LEFT] = VK_LEFT,
+                                           [M_KEY_RIGHT] = VK_RIGHT, [M_ENTER] = VK_RETURN,  [M_ESC] = VK_ESCAPE,
+                                           [M_BACKSPACE] = VK_BACK,  [M_TAB] = VK_TAB };
+    const uint16_t changed = want ^ mouse_sent;
+    for (int bit = 0; bit < M_COUNT; bit++) {
+        if (!(changed & (1u << bit)))
+            continue;
+        const bool down = want & (1u << bit);
+        if (bit == M_LEFT || bit == M_RIGHT)
+            LiSendMouseButtonEvent(down ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE,
+                                   bit == M_LEFT ? BUTTON_LEFT : BUTTON_RIGHT);
+        else
+            LiSendKeyboardEvent((short)(0x8000 | keys[bit]), down ? KEY_ACTION_DOWN : KEY_ACTION_UP, 0);
+    }
+    mouse_sent = want;
+}
+
+/* A stick's tilt past the dead zone, 0 to 1 a side, the dead zone taken off its length (so slow diagonals work). */
+static void stick(const InputState *state, bool right, float *x, float *y)
+{
+    *x = *y = 0;
+    float best = 0;
+    for (int i = 0; i < INPUT_PADS; i++) {
+        if (!state->connected[i])
+            continue;
+        const float sx = right ? state->pad[i].thumb_rx : state->pad[i].thumb_lx;
+        const float sy = right ? state->pad[i].thumb_ry : state->pad[i].thumb_ly;
+        const float length = sqrtf(sx * sx + sy * sy);
+        if (length <= MOUSE_DEADZONE || length <= best)
+            continue;
+        best = length;   /* the pad pushed furthest */
+        float tilt = (length - MOUSE_DEADZONE) / (32767.0f - MOUSE_DEADZONE);
+        tilt = tilt > 1.0f ? 1.0f : tilt;
+        *x = sx / length * tilt;
+        *y = sy / length * tilt;
+    }
+}
+
+/* Mouse mode: the pads become the PC's mouse and a few keys. Returns the events sent. */
+static unsigned mouse_update(const InputState *state, uint64_t now)
+{
+    uint16_t buttons = 0;
+    uint8_t left_trigger = 0, right_trigger = 0;
+    for (int i = 0; i < INPUT_PADS; i++) {
+        if (!state->connected[i])
+            continue;
+        buttons |= state->pad[i].buttons;
+        left_trigger = state->pad[i].left_trigger > left_trigger ? state->pad[i].left_trigger : left_trigger;
+        right_trigger = state->pad[i].right_trigger > right_trigger ? state->pad[i].right_trigger : right_trigger;
+    }
+    /* A console's habits: A chooses, B backs out, Start confirms. The menu's buttons stay the menu's. */
+    static const struct {
+        uint16_t button;
+        uint8_t bit;
+    } map[] = { { INPUT_GAMEPAD_A, M_LEFT },           { INPUT_GAMEPAD_X, M_RIGHT },
+                { INPUT_GAMEPAD_B, M_ESC },            { INPUT_GAMEPAD_START, M_ENTER },
+                { INPUT_GAMEPAD_LEFT_SHOULDER, M_BACKSPACE }, { INPUT_GAMEPAD_RIGHT_SHOULDER, M_TAB },
+                { INPUT_GAMEPAD_DPAD_UP, M_UP },       { INPUT_GAMEPAD_DPAD_DOWN, M_DOWN },
+                { INPUT_GAMEPAD_DPAD_LEFT, M_KEY_LEFT }, { INPUT_GAMEPAD_DPAD_RIGHT, M_KEY_RIGHT } };
+    buttons &= (uint16_t)~atomic_load(&menu_buttons);
+    uint16_t want = 0;
+    for (unsigned i = 0; i < sizeof map / sizeof map[0]; i++)
+        if (buttons & map[i].button)
+            want |= (uint16_t)(1u << map[i].bit);
+    if (right_trigger > TRIGGER_PRESSED)
+        want |= 1u << M_LEFT;
+    if (left_trigger > TRIGGER_PRESSED)
+        want |= 1u << M_RIGHT;
+    /* The A that chose Mouse mode in the stream menu is not a click. */
+    mouse_ignore &= want;
+    want &= (uint16_t)~mouse_ignore;
+    const uint16_t before = mouse_sent;
+    mouse_apply(want);
+    unsigned sent = (unsigned)__builtin_popcount((unsigned)(before ^ want));
+
+    /* The square of the tilt: slow near the centre to land on a button, fast at the edge to cross the screen, and
+     * faster still once the stick has stayed fully over. */
+    static const float speeds[] = { 0.6f, 1.0f, 1.6f };
+    const uint64_t step_us = now - mouse_last_us > 20000 ? 20000 : now - mouse_last_us;
+    const float dt = (float)step_us * 1e-6f;
+    mouse_last_us = now;
+    float x, y;
+    stick(state, true, &x, &y);
+    const float tilt = sqrtf(x * x + y * y);
+    mouse_full_us = tilt > 0.95f ? mouse_full_us + step_us : 0;
+    float boost = mouse_full_us > BOOST_AFTER_US ? (float)(mouse_full_us - BOOST_AFTER_US) / BOOST_OVER_US : 0.0f;
+    boost = 1.0f + (boost > 1.0f ? 1.0f : boost);
+    const float speed = tilt * MOUSE_SPEED * speeds[atomic_load(&pointer_speed)] * boost * dt;
+    mouse_x += x * speed;
+    mouse_y -= y * speed;   /* the stick's up is positive, the screen's negative */
+    stick(state, false, &x, &y);
+    wheel += y * fabsf(y) * WHEEL_SPEED * dt;
+    if (now - mouse_sent_us < MOUSE_INTERVAL_US)
+        return sent;
+    const int dx = (int)mouse_x, dy = (int)mouse_y;
+    if (dx || dy) {
+        LiSendMouseMoveEvent((short)dx, (short)dy);
+        mouse_x -= (float)dx;
+        mouse_y -= (float)dy;
+        mouse_sent_us = now;
+        sent++;
+    }
+    if (y == 0 && fabsf(wheel) < WHEEL_STEP) {
+        wheel = 0;   /* the stick is back: no leftover scrolls later */
+    } else if (fabsf(wheel) >= WHEEL_STEP) {
+        const int amount = (int)wheel;
+        LiSendHighResScrollEvent((short)amount);
+        wheel -= (float)amount;
+        mouse_sent_us = now;
+        sent++;
+    }
+    return sent;
+}
+
+static void mouse_begin(uint64_t now)
+{
+    mouse_x = mouse_y = wheel = 0;
+    mouse_last_us = mouse_sent_us = now;
+    mouse_full_us = 0;
+    mouse_ignore = 0xFFFF;   /* whatever is held now: mouse_update drops each bit once it is released */
+}
+
+/* Sends the next key of a shortcut, if one is due. */
+static unsigned send_key_step(uint64_t now)
+{
+    static uint64_t last_us;
+    if (now - last_us < KEY_STEP_US)
+        return 0;
+    pthread_mutex_lock(&lock);
+    const bool have = key_count > 0;
+    const KeyStep step = key_queue[0];
+    if (have)
+        memmove(key_queue, key_queue + 1, (size_t)--key_count * sizeof key_queue[0]);
+    pthread_mutex_unlock(&lock);
+    if (!have)
+        return 0;
+    LiSendKeyboardEvent((short)(0x8000 | step.vk), step.down ? KEY_ACTION_DOWN : KEY_ACTION_UP, (char)step.modifiers);
+    last_us = now;
+    return 1;
+}
+
 static uint32_t input_thread(void *context)
 {
     (void)context;
@@ -109,27 +293,41 @@ static uint32_t input_thread(void *context)
         for (int i = 0; i < INPUT_PADS; i++)
             pressed_since[i] |= state.buttons[i] & ~latest.buttons[i];
         latest = state;
+        const bool guide = now < guide_until_us;
         pthread_mutex_unlock(&lock);
         reads++;
 
         const InputForward mode = (InputForward)atomic_load(&forward);
-        if (mode == INPUT_FORWARD_LIVE) {
-            sends += send_changes(&state, now);
-        } else if (mode == INPUT_FORWARD_NEUTRAL) {
-            InputState neutral;
-            memset(&neutral, 0, sizeof neutral);
-            memcpy(neutral.connected, state.connected, sizeof neutral.connected);
-            sends += send_changes(&neutral, now);   /* only changes go out: once, then nothing */
-        }
         if (mode != was) {
+            if (was == INPUT_FORWARD_MOUSE && mode != INPUT_FORWARD_OFF)
+                mouse_apply(0);   /* nothing stays held on the PC */
+            if (mode == INPUT_FORWARD_MOUSE)
+                mouse_begin(now);
             printf("[I] input: forwarding %s\n", mode == INPUT_FORWARD_LIVE      ? "the pads"
                                                  : mode == INPUT_FORWARD_NEUTRAL ? "released pads (a menu is open)"
+                                                 : mode == INPUT_FORWARD_MOUSE   ? "the pads as a mouse"
                                                                                  : "nothing");
             was = mode;
         }
+        if (mode != INPUT_FORWARD_OFF) {
+            InputState out = state;
+            if (mode != INPUT_FORWARD_LIVE) {   /* released pads: only changes go out, once, then nothing */
+                memset(&out, 0, sizeof out);
+                memcpy(out.connected, state.connected, sizeof out.connected);
+            }
+            for (int i = 0; guide && i < INPUT_PADS; i++)
+                if (out.connected[i]) {   /* the stream menu's Guide shortcut, on the first pad */
+                    out.pad[i].buttons |= INPUT_GAMEPAD_GUIDE;
+                    break;
+                }
+            sends += send_changes(&out, now);
+            if (mode == INPUT_FORWARD_MOUSE)
+                sends += mouse_update(&state, now);
+            sends += send_key_step(now);
+        }
         if (now - window_start >= LOG_EVERY_S * 1000000ULL) {
             if (mode != INPUT_FORWARD_OFF)
-                printf("[I] input: %.0f reads and %.1f controller events a second\n",
+                printf("[I] input: %.0f reads and %.1f input events a second\n",
                        reads * 1e6 / (double)(now - window_start), sends * 1e6 / (double)(now - window_start));
             window_start = now;
             reads = sends = 0;
@@ -175,6 +373,55 @@ void input_reset(void)
     memset(sent_once, 0, sizeof sent_once);
     memset(last_analog_us, 0, sizeof last_analog_us);
     previous_mask = 0;
+    mouse_sent = 0;
+    pthread_mutex_lock(&lock);
+    key_count = 0;
+    guide_until_us = 0;
+    pthread_mutex_unlock(&lock);
+}
+
+void input_set_menu_buttons(uint16_t buttons)
+{
+    atomic_store(&menu_buttons, (int)buttons);
+}
+
+void input_set_pointer_speed(int speed)
+{
+    atomic_store(&pointer_speed, speed < 0 ? 0 : speed > 2 ? 2 : speed);
+}
+
+void input_send_shortcut(InputShortcut shortcut)
+{
+    static const KeyStep esc[] = { { VK_ESCAPE, true, 0 }, { VK_ESCAPE, false, 0 } };
+    static const KeyStep enter[] = { { VK_RETURN, true, 0 }, { VK_RETURN, false, 0 } };
+    static const KeyStep alt_tab[] = { { VK_MENU, true, MODIFIER_ALT }, { VK_TAB, true, MODIFIER_ALT },
+                                       { VK_TAB, false, MODIFIER_ALT }, { VK_MENU, false, 0 } };
+    static const KeyStep alt_f4[] = { { VK_MENU, true, MODIFIER_ALT }, { VK_F4, true, MODIFIER_ALT },
+                                      { VK_F4, false, MODIFIER_ALT }, { VK_MENU, false, 0 } };
+    static const KeyStep win[] = { { VK_LWIN, true, MODIFIER_META }, { VK_LWIN, false, 0 } };
+    static const KeyStep tab[] = { { VK_TAB, true, 0 }, { VK_TAB, false, 0 } };
+    static const KeyStep alt_enter[] = { { VK_MENU, true, MODIFIER_ALT }, { VK_RETURN, true, MODIFIER_ALT },
+                                         { VK_RETURN, false, MODIFIER_ALT }, { VK_MENU, false, 0 } };
+    static const KeyStep win_d[] = { { VK_LWIN, true, MODIFIER_META }, { VK_D, true, MODIFIER_META },
+                                     { VK_D, false, MODIFIER_META }, { VK_LWIN, false, 0 } };
+    static const struct {
+        const KeyStep *steps;
+        int count;
+    } keys[SHORTCUTS] = { [SHORTCUT_ESC] = { esc, 2 },         [SHORTCUT_ENTER] = { enter, 2 },
+                          [SHORTCUT_ALT_TAB] = { alt_tab, 4 }, [SHORTCUT_ALT_F4] = { alt_f4, 4 },
+                          [SHORTCUT_WIN] = { win, 2 },         [SHORTCUT_TAB] = { tab, 2 },
+                          [SHORTCUT_ALT_ENTER] = { alt_enter, 4 }, [SHORTCUT_WIN_D] = { win_d, 4 } };
+    if ((int)shortcut < 0 || shortcut >= SHORTCUTS)
+        return;
+    pthread_mutex_lock(&lock);
+    if (shortcut == SHORTCUT_GUIDE) {
+        guide_until_us = now_us() + GUIDE_HOLD_US;
+    } else if (key_count + keys[shortcut].count <= KEY_QUEUE) {   /* a whole shortcut or none: no key left down */
+        memcpy(key_queue + key_count, keys[shortcut].steps, (size_t)keys[shortcut].count * sizeof key_queue[0]);
+        key_count += keys[shortcut].count;
+    }
+    pthread_mutex_unlock(&lock);
+    printf("[I] input: shortcut %d sent to the PC\n", (int)shortcut);
 }
 
 void input_rumble(unsigned short controller, unsigned short low, unsigned short high)

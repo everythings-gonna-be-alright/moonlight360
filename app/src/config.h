@@ -13,6 +13,7 @@ enum { CONFIG_RECENT = 4 };
 /* Where the stats HUD sits. */
 typedef enum { HUD_TOP_LEFT, HUD_TOP_RIGHT, HUD_BOTTOM_LEFT, HUD_BOTTOM_RIGHT, HUD_CORNERS } HudCorner;
 /* What, held for a second while streaming, opens the stream menu (config.c's menu_combo_buttons gives the buttons). */
+enum { POINTER_SPEEDS = 3 };
 typedef enum { COMBO_BACK, COMBO_START, COMBO_BACK_START, COMBO_LB_RB, MENU_COMBOS } MenuCombo;
 /* How big the stats HUD is: 70%, 80% and 100% of the size it's laid out at (ui.c). */
 typedef enum { HUD_SMALL, HUD_MEDIUM, HUD_LARGE, HUD_SIZES } HudSize;
@@ -46,6 +47,10 @@ typedef struct {
     int hud_corner;     /* HudCorner */
     int hud_size;       /* HudSize */
     bool rumble;        /* pass the PC's controller rumble on to the pads */
+    int pointer_speed;  /* mouse mode's pointer: 0 slow, 1 normal, 2 fast (POINTER_SPEEDS, input.c) */
+    /* Draw a 1920x1080 picture, shown pixel for pixel on a 1080p output, where the usual 1280x720 one is scaled up by
+     * the console (main.c). Read once, when the app starts. */
+    bool picture_1080p;
     bool wake_on_lan;   /* wake the PC with a magic packet before connecting (wol.c) */
     char host_mac[18];  /* the PC's MAC address, "aa:bb:cc:dd:ee:ff", as it last reported it; "" unknown */
     int app_id;         /* the host's id for app, for its cover; 0 unknown (a typed name) */

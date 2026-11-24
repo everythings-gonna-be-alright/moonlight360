@@ -53,6 +53,7 @@ bool config_load(const char *path, Config *c)
     c->hud_corner = HUD_TOP_LEFT;
     c->hud_size = HUD_MEDIUM;
     c->rumble = true;
+    c->pointer_speed = 1;
     c->wake_on_lan = false;
     c->host_mac[0] = 0;
     c->app_id = 0;
@@ -119,6 +120,12 @@ bool config_load(const char *path, Config *c)
             c->hud_size = v >= 0 && v < HUD_SIZES ? v : HUD_MEDIUM;
         } else if (!strcmp(key, "rumble"))
             c->rumble = atoi(value) != 0;
+        else if (!strcmp(key, "picture"))
+            c->picture_1080p = atoi(value) == 1080;
+        else if (!strcmp(key, "pointer_speed")) {
+            const int v = atoi(value);
+            c->pointer_speed = v >= 0 && v < POINTER_SPEEDS ? v : 1;
+        }
         else if (!strcmp(key, "wake_on_lan"))
             c->wake_on_lan = atoi(value) != 0;
         else if (!strcmp(key, "host_mac"))
@@ -223,12 +230,17 @@ bool config_save(const char *path, const Config *c)
             "show_recent=%d\n"
             "# menu_combo: held a second while streaming, opens the stream menu: 0 Back, 1 Start, 2 Back + Start,\n"
             "# 3 LB + RB\n"
-            "menu_combo=%d\n",
+            "menu_combo=%d\n"
+            "# pointer_speed: mouse mode's pointer, 0 slow, 1 normal, 2 fast\n"
+            "pointer_speed=%d\n"
+            "# picture=1080: a 1920x1080 picture on a 1080p TV, not 1280x720 scaled up; read when the app starts.\n"
+            "# If the screen stays black or scrambled with it, set picture=720 here.\n"
+            "picture=%d\n",
             c->host, c->app, c->width, c->height, c->fps, c->bitrate_kbps, c->stats_mode,
             c->fast_decode ? 1 : 0, c->audio_packet_ms, c->audio_on_host ? 1 : 0, c->low_latency ? 1 : 0, c->decode ? 1 : 0, c->draw ? 1 : 0, c->packet_size, c->slices,
             c->codec == CODEC_MPEG2 ? "mpeg2" : "h264", c->logging ? 1 : 0, c->ui_sounds ? 1 : 0, c->theme, c->auto_resume ? 1 : 0, c->hud_corner, c->hud_size,
             c->rumble ? 1 : 0, c->wake_on_lan ? 1 : 0, c->host_mac, c->app_id,
-            c->show_recent ? 1 : 0, c->menu_combo);
+            c->show_recent ? 1 : 0, c->menu_combo, c->pointer_speed, c->picture_1080p ? 1080 : 720);
     for (int i = 0; i < CONFIG_RECENT && c->recent_name[i][0]; i++)
         fprintf(f, "recent%d=%d|%s\n", i + 1, c->recent_id[i], c->recent_name[i]);
     fclose(f);

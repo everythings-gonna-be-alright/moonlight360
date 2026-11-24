@@ -754,8 +754,9 @@ int main(int argc, char **argv)
     shot_menu(dir, "3b-play-error-long");
     menu_set_message(NULL);
     press(INPUT_GAMEPAD_RIGHT_SHOULDER);
+    press(INPUT_GAMEPAD_DPAD_DOWN);   /* 1080p picture */
     press(INPUT_GAMEPAD_DPAD_DOWN);
-    press(INPUT_GAMEPAD_DPAD_DOWN);
+    press(INPUT_GAMEPAD_DPAD_DOWN);   /* Bitrate */
     for (int i = 0; i < 12; i++) {   /* past the tab's fade */
         gfx_frame_begin(W, H);
         menu_draw(W, H);

@@ -20,7 +20,26 @@ typedef enum {
     INPUT_FORWARD_OFF,       /* nothing: no stream */
     INPUT_FORWARD_LIVE,      /* the pads as they are */
     INPUT_FORWARD_NEUTRAL,   /* every pad released, sticks centred: a menu has the controller */
+    /* Every pad released; the controller is the PC's mouse and a few keys instead. Right stick: the pointer. Left
+     * stick: the wheel. A or RT: left button. X or LT: right button. B: Esc. Start: Enter. LB: Backspace. RB: Tab.
+     * D-pad: the arrow keys. The stream menu's own buttons (input_set_menu_buttons) stay the menu's. */
+    INPUT_FORWARD_MOUSE,
 } InputForward;
+
+/* Keys the stream menu sends to the PC. Guide is the controller's Guide button, which the console keeps to itself:
+ * Steam opens Big Picture on it, Windows the Game Bar. */
+typedef enum {
+    SHORTCUT_ESC,
+    SHORTCUT_ENTER,
+    SHORTCUT_TAB,
+    SHORTCUT_ALT_TAB,
+    SHORTCUT_ALT_ENTER,   /* full screen on and off, in most games */
+    SHORTCUT_ALT_F4,
+    SHORTCUT_WIN,
+    SHORTCUT_WIN_D,       /* shows the desktop */
+    SHORTCUT_GUIDE,
+    SHORTCUTS,
+} InputShortcut;
 
 /* Starts the input thread (once). Without it nothing reads the pads. */
 void input_start(void);
@@ -29,6 +48,12 @@ void input_poll(InputState *state);
 void input_set_forward(InputForward mode);
 /* Forgets what was sent (call when a stream starts, before forwarding). */
 void input_reset(void);
+/* Presses and releases a shortcut's keys on the PC, from the input thread, while a stream runs. */
+void input_send_shortcut(InputShortcut shortcut);
+/* Mouse mode: the buttons that open the stream menu (INPUT_GAMEPAD_ bits), which press no key on the PC. */
+void input_set_menu_buttons(uint16_t buttons);
+/* Mouse mode's pointer speed: 0 slow, 1 normal, 2 fast. */
+void input_set_pointer_speed(int speed);
 /* Stops rumble on every pad. */
 void input_stop_rumble(void);
 /* moonlight-common-c rumble callback. */

@@ -72,7 +72,7 @@ target_compile_definitions(gamestream PRIVATE PATH_MAX=260)
 
 # --- The title ---------------------------------------------------------------------------------------------------
 add_executable(moonlight360
-  src/main.c src/config.c src/menu.c src/icons.c src/moon.c src/apps.c src/image.c src/coverart.c src/overlay.c src/ui.c src/theme.c src/gfx.c src/perf.c src/session.c src/wol.c src/discover.c src/video.c src/render.c src/audio.c src/input.c src/uisound.c src/placement.c src/posix_stubs.c src/diag.c src/netfix.c src/logbuf.c src/devreturn.c)
+  src/main.c src/config.c src/menu.c src/icons.c src/moon.c src/apps.c src/image.c src/coverart.c src/overlay.c src/ui.c src/theme.c src/gfx.c src/perf.c src/session.c src/wol.c src/discover.c src/video.c src/render.c src/audio.c src/input.c src/typetext.c src/uisound.c src/placement.c src/posix_stubs.c src/diag.c src/netfix.c src/logbuf.c src/devreturn.c)
 set_target_properties(moonlight360 PROPERTIES C_STANDARD 17 C_EXTENSIONS ON)
 target_compile_options(moonlight360 PRIVATE -O2 -Wall -Wextra -Wno-unused-parameter)
 target_include_directories(moonlight360 PRIVATE src "${FFMPEG_PREFIX}/include"

@@ -18,8 +18,11 @@ open-source [xsdk](https://github.com/xenosworks/xsdk): no Microsoft XDK involve
 
 - Pair, pick an app, play. Launch, resume and quit games on the PC.
 - H.264 video from 360p to 1080p, at 30 or 60 fps. Opus stereo audio. Controllers 1–4 with rumble.
+- A true 1080p picture on a 1080p TV (*Video → 1080p picture*), not 720p scaled up by the console.
 - A stats HUD: frame rate, latency by stage, ping, packet loss, CPU and GPU load and temperatures. 🥵
 - Low-latency display, and controllers read 500 times a second.
+- Mouse and keyboard from the controller: a mouse mode, typing with the on-screen keyboard, and keys like Esc,
+  Alt + Tab and Guide, all in the stream menu (**X** there switches mouse mode, **Y** types).
 - Finds your PC on the network, shows app covers, and keeps your recent apps one press away.
 - Wake-on-LAN, reconnect on start, and four colour themes.
 - A menu made for a controller and a TV.
@@ -60,7 +63,8 @@ Time to decode one 1080p frame on the console, at about 22 Mbit/s. 60 fps needs 
 
 1. Host's web UI: *Force a Specific Encoder* → **Software**
 2. *Software Encoder* → *SW Presets* → **ultrafast**
-3. Console: **1920×1080**, **60 fps**, *Fast decode* off. Start a new stream.
+3. Console: **1920×1080**, **60 fps**, *Fast decode* off, *1080p picture* on (restart the app once after turning
+   it on). Start a new stream.
 
 The stats HUD shows `CAVLC lean` when it worked. A real six-minute 1080p60 stream at 30 Mbit/s averaged 59 fps and
 40 ms from the PC to the screen. The price: the PC's processor encodes, and the picture is a little blockier.

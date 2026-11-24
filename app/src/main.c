@@ -27,6 +27,7 @@
 #include "menu.h"
 #include "netfix.h"
 #include "overlay.h"
+#include "typetext.h"
 #include "render.h"
 #include "session.h"
 #include "ui.h"
@@ -44,6 +45,8 @@
 
 enum {
     BUFFERS = 2,
+    UI_WIDTH = 1280,   /* what the menus, the HUD and the stream menu are laid out for */
+    UI_HEIGHT = 720,
     SWAP_INTERVAL = 1,
     BEGIN_TIMEOUT_MS = 5000,
 
@@ -504,19 +507,35 @@ int main(void)
         printf("[E] GPU or text setup failed\n");
         return 1;
     }
-    uint32_t width = 0, height = 0;
-    if (!NT_SUCCESS(xsdk_present_open(XSDK_DISPLAY_720P, BUFFERS, SWAP_INTERVAL, &width, &height))) {
+    /* The settings come first: the picture's size is one of them. */
+    static Config config;
+    const bool have_config = config_load(CONFIG_PATH, &config);
+    /* Video > 1080p picture (or "display=1080" in the dev server's arguments): a 1920x1080 picture shown pixel for
+     * pixel on a 1080p output, where the usual 1280x720 one is scaled up by the console (xsdk's XSDK_DISPLAY_1080P,
+     * patches/xsdk-display-1080p.patch). Elsewhere the SDK falls back to 1280x720 by itself. Ran on the console on
+     * 2026-11-24: a 1080p60 stream for seven minutes, 3 of 26306 frames late, latency as at 1280x720. */
+    const bool full_hd = arg_int(devreturn_args(), "display", config.picture_1080p ? 1080 : 720) == 1080;
+    uint32_t target_width = 0, target_height = 0;
+    if (!NT_SUCCESS(xsdk_present_open(full_hd ? XSDK_DISPLAY_1080P : XSDK_DISPLAY_720P, BUFFERS, SWAP_INTERVAL,
+                                      &target_width, &target_height))) {
         printf("[E] display setup failed\n");
         return 1;
     }
+    /* The menus and the HUD are laid out for 1280x720 and drawn in those units: on a larger target they grow with it.
+     * The video fills the target whatever its size. */
+    const uint32_t width = UI_WIDTH, height = UI_HEIGHT;
+    /* A target past half of eDRAM (1920x1080 takes four fifths) has no room for a depth buffer behind it: colour goes
+     * from the first tile, and resolves clear colour only. Nothing here uses depth. */
+    const bool large_target = xsdk_gpu_target_tiles(target_width, target_height) * 2 > XSDK_EDRAM_TILES;
+    if (large_target)
+        xsdk_gpu_set_resolve_clears(true, false);
     if (!render_init() || !gfx_init())
         return 1;
     perf_start();
-    printf("[I] display %ux%u\n", (unsigned)width, (unsigned)height);
+    printf("[I] display %ux%u\n", (unsigned)target_width, (unsigned)target_height);
     diag_log("start");
 
-    static Config config;
-    if (!config_load(CONFIG_PATH, &config))
+    if (!have_config)
         menu_set_message("Set the Host PC to the IP address of the PC running Sunshine, then Connect.");
     menu_open(&config, CONFIG_PATH);
     bool in_session = false;          /* a session was started and hasn't come back to the menu yet */
@@ -543,6 +562,7 @@ int main(void)
 
     uint32_t shown_frames = 0;
     uint64_t combo_held_since = 0;
+    bool combo_released = true;
     bool stopping = false;            /* a stop was asked for; the flow is winding down */
     bool stopped_by_user = false;     /* through the stream menu */
     bool was_streaming = false;
@@ -634,6 +654,12 @@ int main(void)
             config_save(CONFIG_PATH, &config);
         }
         if (streaming && !was_streaming) {   /* a new stream: no display latency yet */
+            overlay_set_mouse(false);   /* the controller is a controller again */
+            overlay_set_pointer_speed(config.pointer_speed);
+            input_set_pointer_speed(config.pointer_speed);
+            /* Mouse mode leaves the stream menu's buttons alone, and names them in its reminder. */
+            input_set_menu_buttons(menu_combo_buttons(config.menu_combo));
+            overlay_set_menu_combo(menu_combo_buttons(config.menu_combo), menu_combo_name(config.menu_combo));
             queued.decoded_us = 0;
             display.avg_ms = -1.0f;
             memset(&history, 0, sizeof history);
@@ -670,7 +696,10 @@ int main(void)
                 refresh.target_vblank = vblank + 1;
             }
         }
-        xsdk_gpu_set_target(width, height);
+        if (large_target)
+            xsdk_gpu_set_target_at(target_width, target_height, 0, 0);
+        else
+            xsdk_gpu_set_target(target_width, target_height);
         gfx_frame_begin(width, height);
         perf_gpu_frame_begin();
         if (streaming) {
@@ -707,7 +736,7 @@ int main(void)
             menu_draw(width, height);
         }
         gfx_flush();
-        xsdk_gpu_resolve(address, width, height, CLEAR_ARGB);
+        xsdk_gpu_resolve(address, target_width, target_height, CLEAR_ARGB);
         perf_gpu_frame_end();
         xsdk_present_end();
         queued = new_frame;
@@ -723,10 +752,26 @@ int main(void)
 
         if (!streaming)
             input_set_forward(INPUT_FORWARD_OFF);
-        if (streaming && overlay_is_open()) {
+        const bool typing = typetext_poll();   /* sends the text once the keyboard closes */
+        if (streaming && typing) {
+            /* The console's keyboard has the controller: nothing of it reaches the PC or the stream menu. */
+            input_set_forward(INPUT_FORWARD_NEUTRAL);
+            combo_held_since = 0;
+        } else if (streaming && overlay_is_open()) {
             input_set_forward(INPUT_FORWARD_NEUTRAL);
             switch (overlay_update(&input, &config.stats_mode)) {
             case OVERLAY_STATS:
+                config_save(CONFIG_PATH, &config);
+                break;
+            case OVERLAY_TYPE:
+                typetext_open(overlay_pad());
+                break;
+            case OVERLAY_KEY:
+                input_send_shortcut(overlay_key());
+                break;
+            case OVERLAY_POINTER:
+                config.pointer_speed = overlay_pointer_speed();
+                input_set_pointer_speed(config.pointer_speed);
                 config_save(CONFIG_PATH, &config);
                 break;
             case OVERLAY_DISCONNECT:
@@ -747,20 +792,31 @@ int main(void)
             for (int i = 0; i < INPUT_PADS; i++)
                 combo |= (input.buttons[i] & menu_combo_buttons(config.menu_combo)) ==
                          menu_combo_buttons(config.menu_combo);
+            /* Held a second, so a press meant for the game doesn't open the menu. In mouse mode nothing else uses
+             * these buttons, so they open it at once. Either way they are let go before they can open it again. */
             if (!combo) {
                 combo_held_since = 0;
+                combo_released = true;
             } else if (!combo_held_since) {
                 combo_held_since = now_ms();
-            } else if (now_ms() - combo_held_since >= MENU_HOLD_MS) {
+            }
+            if (combo && combo_released && now_ms() - combo_held_since >= (overlay_mouse() ? 0 : MENU_HOLD_MS)) {
                 combo_held_since = 0;
+                combo_released = false;
                 /* The menu takes the controller: the input thread releases everything on the host. */
                 input_set_forward(INPUT_FORWARD_NEUTRAL);
                 overlay_open();
                 continue;
             }
-            /* The input thread sends the pads itself, as soon as they change. */
+            /* Mouse mode: Y opens the keyboard, for the text field just clicked. */
+            for (int i = 0; overlay_mouse() && i < INPUT_PADS; i++)
+                if (input.pressed[i] & INPUT_GAMEPAD_Y) {
+                    typetext_open((uint32_t)i);
+                    break;
+                }
+            /* The input thread sends the pads itself, as soon as they change: as they are, or as a mouse. */
             if (config.input)
-                input_set_forward(INPUT_FORWARD_LIVE);
+                input_set_forward(overlay_mouse() ? INPUT_FORWARD_MOUSE : INPUT_FORWARD_LIVE);
         } else if (in_session) {
             /* Connecting or pairing: the flow can't be interrupted mid-request, so Back leaves the app. */
             if (any_pressed(&input, INPUT_GAMEPAD_BACK))
