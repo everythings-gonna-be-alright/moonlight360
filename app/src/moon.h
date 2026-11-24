@@ -1,5 +1,6 @@
 /* The Play tab's night sky: a moon that floats in a breathing halo among twinkling stars, with random events now and
- * then (shooting stars, a passing cloud, a star's glint, a satellite). Drawing thread only, like gfx.h; timed by
+ * then (shooting stars, a passing cloud, a star's glint, a satellite) and rare ones minutes apart (birds across the
+ * moon, a comet, a meteor shower, a blood moon, a UFO). Drawing thread only, like gfx.h; timed by
  * gfx_frame at the menus' 60 frames a second. */
 #pragma once
 

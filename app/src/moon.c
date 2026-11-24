@@ -12,7 +12,9 @@
 #define COUNT(a) ((int)(sizeof(a) / sizeof((a)[0])))
 
 static const uint32_t MOON = 0xFFF4EBCF, CRATER = 0xFFE2D5B0, STAR_RGB = 0x00E6E6EA, SATELLITE_RGB = 0x009A9AA2,
-                      CLOUD_RGB = 0x0026262B, CLOUD_RIM_RGB = 0x003E3D40;
+                      CLOUD_RGB = 0x0026262B, CLOUD_RIM_RGB = 0x003E3D40, BLOOD_MOON = 0xFFD9653B,
+                      BLOOD_CRATER = 0xFFB04A2A, COMET_RGB = 0x00BFE4FF, BIRD = 0xFF0C0C0E, UFO_BODY = 0xFF9A9AA6,
+                      UFO_DOME = 0xFFCFE8F0;
 static const float FRAMES_PER_SECOND = 60.0f;
 
 /* Stars: x, y (in moon radii from the centre), size, twinkle period in seconds. */
@@ -29,6 +31,10 @@ typedef struct {
 
 /* First ones soon after the menu opens, so the sky shows it's alive. */
 static Event shooting = { .next = 3.0f }, cloud = { .next = 9.0f }, glint = { .next = 1.5f }, satellite = { .next = 24.0f };
+/* The rare ones, minutes apart, for whoever lingers: birds across the moon, a comet, a meteor shower, a blood moon,
+ * and now and then a UFO. */
+static Event birds = { .next = 30.0f }, comet = { .next = 45.0f }, shower = { .next = 70.0f },
+             blood = { .next = 150.0f }, ufo = { .next = 240.0f };
 
 static uint32_t seed = 0x9E3779B9u;
 
@@ -57,6 +63,17 @@ static uint32_t toward(uint32_t colour, float share)
     uint32_t out = 0xFF000000;
     for (int shift = 0; shift <= 16; shift += 8) {
         const float from = (float)((THEME_BG >> shift) & 0xFF), to = (float)((colour >> shift) & 0xFF);
+        out |= (uint32_t)(from + (to - from) * clamp01(share) + 0.5f) << shift;
+    }
+    return out;
+}
+
+/* Opaque colour a share of the way from a to b. */
+static uint32_t mix(uint32_t a, uint32_t b, float share)
+{
+    uint32_t out = 0xFF000000;
+    for (int shift = 0; shift <= 16; shift += 8) {
+        const float from = (float)((a >> shift) & 0xFF), to = (float)((b >> shift) & 0xFF);
         out |= (uint32_t)(from + (to - from) * clamp01(share) + 0.5f) << shift;
     }
     return out;
@@ -108,6 +125,23 @@ static void draw_stars(float cx, float cy, float r, float t)
     }
 }
 
+/* A streak across the sky: a bright head from (x0, y0) along (dx, dy), slowing as it burns out, with a fading tail of
+ * tail dots behind it. p from 0 to 1 over its flight. */
+static void draw_streak(float x0, float y0, float dx, float dy, float p, int tail)
+{
+    const float eased = 1.0f - (1.0f - p) * (1.0f - p);
+    const float hx = x0 + dx * eased, hy = y0 + dy * eased;
+    const float bright = fade(p, 0.25f);
+    for (int k = tail - 1; k >= 0; k--) {   /* back to front, the head last */
+        const float back = (float)k / (float)tail;
+        const float x = hx - dx * 0.30f * back, y = hy - dy * 0.30f * back;
+        const float left = 1.0f - back;
+        gfx_circle(x, y, 0.7f + 1.8f * left, with_alpha(STAR_RGB, bright * left * left));
+    }
+    gfx_circle(hx, hy, 5.0f, with_alpha(STAR_RGB, 0.22f * bright));   /* the head's glow */
+    gfx_circle(hx, hy, 2.6f, with_alpha(0x00FFFFFF, bright));
+}
+
 /* A shooting star: a bright head with a fading tail, down and to the left, passing behind the moon. */
 static void draw_shooting_star(float cx, float cy, float r, float t)
 {
@@ -120,20 +154,117 @@ static void draw_shooting_star(float cx, float cy, float r, float t)
         shooting.c = -2.6f * r * speed;   /* the whole flight */
         shooting.d = random_range(1.2f, 1.8f) * r * speed;
     }
+    if (p >= 0.0f)
+        draw_streak(shooting.a, shooting.b, shooting.c, shooting.d, p, 36);
+}
+
+/* A meteor shower: a handful of shooting stars from one point of the sky, one after another. */
+static void draw_shower(float cx, float cy, float r, float t)
+{
+    enum { METEORS = 5 };
+    bool started;
+    const float p = progress(&shower, t, 4.0f, 120.0f, 240.0f, &started);
+    if (started) {
+        shower.a = cx + random_range(0.4f, 2.0f) * r;   /* the radiant: where they seem to come from */
+        shower.b = cy + random_range(-2.0f, -1.5f) * r;
+    }
     if (p < 0.0f)
         return;
-    const float eased = 1.0f - (1.0f - p) * (1.0f - p);   /* fast at first, slowing as it burns out */
-    const float hx = shooting.a + shooting.c * eased, hy = shooting.b + shooting.d * eased;
-    const float bright = fade(p, 0.25f);
-    enum { TAIL = 36 };
-    for (int k = TAIL - 1; k >= 0; k--) {   /* back to front, the head last */
-        const float back = (float)k / TAIL;
-        const float x = hx - shooting.c * 0.30f * back, y = hy - shooting.d * 0.30f * back;
-        const float left = 1.0f - back;
-        gfx_circle(x, y, 0.7f + 1.8f * left, with_alpha(STAR_RGB, bright * left * left));
+    const float now = p * 4.0f;
+    for (int i = 0; i < METEORS; i++) {
+        /* Each its own start, place and slant, the same for every frame of the shower (from its index). */
+        const float begin = 0.55f * (float)i + 0.12f * sinf((float)i * 2.3f);
+        const float mp = (now - begin) / 0.9f;
+        if (mp < 0.0f || mp > 1.0f)
+            continue;
+        const float spread = sinf((float)i * 1.7f + shower.a), slant = 0.9f + 0.4f * cosf((float)i * 2.9f);
+        const float x0 = shower.a + spread * 0.5f * r, y0 = shower.b + 0.15f * r * cosf((float)i * 4.1f);
+        draw_streak(x0, y0, -2.0f * r * slant, 1.3f * r * slant, mp, 24);
     }
-    gfx_circle(hx, hy, 5.0f, with_alpha(STAR_RGB, 0.22f * bright));   /* the head's glow */
-    gfx_circle(hx, hy, 2.6f, with_alpha(0x00FFFFFF, bright));
+}
+
+/* A comet: slow, its long tail glowing behind it, across the top of the sky. */
+static void draw_comet(float cx, float cy, float r, float t)
+{
+    enum { TAIL = 54 };
+    bool started;
+    const float p = progress(&comet, t, 9.0f, 90.0f, 180.0f, &started);
+    if (started) {
+        comet.a = random_range(0.0f, 1.0f) < 0.5f ? -1.0f : 1.0f;   /* which way */
+        comet.b = cy + random_range(-1.95f, -1.55f) * r;
+    }
+    if (p < 0.0f)
+        return;
+    const float seen = fade(p, 0.18f);
+    const float hx = cx + comet.a * (p * 2.0f - 1.0f) * 2.2f * r, hy = comet.b + 0.25f * r * p;
+    /* The tail streams back and a little up, widening and fading. */
+    for (int k = TAIL - 1; k >= 0; k--) {
+        const float back = (float)k / TAIL, left = 1.0f - back;
+        const float x = hx - comet.a * back * 1.1f * r, y = hy - back * 0.28f * r - back * back * 0.12f * r;
+        gfx_circle(x, y, 1.2f + 6.0f * back, with_alpha(COMET_RGB, seen * 0.16f * left * left));
+    }
+    gfx_circle(hx, hy, 7.0f, with_alpha(COMET_RGB, 0.25f * seen));
+    gfx_circle(hx, hy, 2.4f, with_alpha(0x00FFFFFF, seen));
+}
+
+/* A UFO, rarely: it slides in, hovers beside the moon with its lights running, then darts away. */
+static void draw_ufo(float cx, float cy, float r, float t)
+{
+    bool started;
+    const float p = progress(&ufo, t, 6.0f, 300.0f, 480.0f, &started);
+    if (started)
+        ufo.a = random_range(0.0f, 1.0f) < 0.5f ? -1.0f : 1.0f;   /* which side it hovers on */
+    if (p < 0.0f)
+        return;
+    /* In over the first quarter, easing to a stop; hover; gone in the last tenth, fast. */
+    const float hx = cx + ufo.a * 1.55f * r, hy = cy - 1.05f * r;
+    float x = hx, y = hy + 3.0f * sinf(t * TAU / 1.4f);
+    if (p < 0.25f) {
+        const float q = 1.0f - p / 0.25f;
+        x += ufo.a * q * q * 2.0f * r;
+        y -= q * q * 0.8f * r;
+    } else if (p > 0.9f) {
+        const float q = (p - 0.9f) / 0.1f;
+        x -= ufo.a * q * q * 3.0f * r;
+        y -= q * q * 1.2f * r;
+    }
+    const float w = 0.26f * r;
+    gfx_circle(x, y - 0.08f * r, 0.085f * r, UFO_DOME);
+    gfx_rect(x - w / 2, y - 0.035f * r, w, 0.07f * r, 0.035f * r, UFO_BODY);
+    static const uint32_t lights[3] = { 0x00FF7A1A, 0x0080FF9A, 0x00FFFFFF };
+    for (int i = 0; i < 3; i++) {
+        const bool on = ((int)(t * 6.0f) + i) % 3 == 0;
+        gfx_circle(x + (float)(i - 1) * 0.08f * r, y, 2.2f, with_alpha(lights[i], on ? 1.0f : 0.35f));
+    }
+}
+
+/* Birds: a little flock flapping across, in front of the moon; dark, so they show against it and not the sky. */
+static void draw_birds(float cx, float cy, float r, float t)
+{
+    enum { FLOCK = 4, ARM = 11 };   /* dots a wing: enough to read as one stroke */
+    bool started;
+    const float p = progress(&birds, t, 7.0f, 60.0f, 120.0f, &started);
+    if (started) {
+        birds.a = random_range(0.0f, 1.0f) < 0.5f ? -1.0f : 1.0f;   /* which way */
+        birds.b = cy + random_range(-0.35f, 0.25f) * r;                /* across the moon */
+    }
+    if (p < 0.0f)
+        return;
+    for (int i = 0; i < FLOCK; i++) {
+        /* A loose V: each a little behind and to the side of the one before. */
+        const float lag = 0.13f * (float)i, side = (i % 2 ? 1.0f : -1.0f) * 0.07f * (float)((i + 1) / 2) * r;
+        const float x = cx + birds.a * ((p - lag) * 2.0f - 1.0f) * 2.3f * r, y = birds.b + side;
+        const float size = 5.2f - 0.5f * (float)i;
+        const float flap = sinf(t * TAU * 2.2f + (float)i * 1.3f);   /* -1 wings down, 1 up */
+        for (int k = 1; k <= ARM; k++) {   /* each wing: dots out from the body, bending with the flap */
+            const float along = (float)k / ARM;
+            const float dx = along * 3.0f * size, dy = -along * flap * 1.6f * size + along * along * size;
+            const float thick = 1.7f - 0.6f * along;   /* wings thinning to their tips */
+            gfx_circle(x - dx, y + dy, thick, BIRD);
+            gfx_circle(x + dx, y + dy, thick, BIRD);
+        }
+        gfx_circle(x, y + 0.5f, 2.2f, BIRD);
+    }
 }
 
 /* A satellite: a dim dot crawling across the sky with an orange light that blinks. */
@@ -191,17 +322,27 @@ void moon_draw(float cx, float cy, float r)
     /* Craters drift a little, as if the moon turned slowly. */
     const float turn = 0.04f * r * sinf(t * TAU / 23.0f);
 
-    /* Back to front: sky, moon, cloud. */
+    /* A blood moon, rarely: the moon warms to red and back over a few seconds. */
+    bool started;
+    const float bp = progress(&blood, t, 14.0f, 180.0f, 300.0f, &started);
+    const float red = bp < 0.0f ? 0.0f : fade(bp, 0.35f);
+    const uint32_t moon = mix(MOON, BLOOD_MOON, red), crater = mix(CRATER, BLOOD_CRATER, red);
+
+    /* Back to front: sky, moon, what flies in front of it, cloud. */
     draw_stars(cx, cy, r, t);
+    draw_comet(cx, cy, r, t);
     draw_satellite(cx, cy, r, t);
+    draw_ufo(cx, cy, r, t);
     draw_shooting_star(cx, cy, r, t);
+    draw_shower(cx, cy, r, t);
 
-    gfx_circle(cx, my, r * (1.30f + 0.05f * breath), with_alpha(MOON, (8.0f + 10.0f * breath) / 255.0f));
-    gfx_circle(cx, my, r * 1.13f, with_alpha(MOON, (14.0f + 10.0f * breath) / 255.0f));
-    gfx_circle(cx, my, r, MOON);
-    gfx_circle(cx - r * 0.35f + turn, my - r * 0.25f, r * 0.20f, CRATER);
-    gfx_circle(cx + r * 0.30f + turn, my + r * 0.10f, r * 0.13f, CRATER);
-    gfx_circle(cx - r * 0.05f + turn, my + r * 0.45f, r * 0.10f, CRATER);
+    gfx_circle(cx, my, r * (1.30f + 0.05f * breath), with_alpha(moon, (8.0f + 10.0f * breath) / 255.0f));
+    gfx_circle(cx, my, r * 1.13f, with_alpha(moon, (14.0f + 10.0f * breath) / 255.0f));
+    gfx_circle(cx, my, r, moon);
+    gfx_circle(cx - r * 0.35f + turn, my - r * 0.25f, r * 0.20f, crater);
+    gfx_circle(cx + r * 0.30f + turn, my + r * 0.10f, r * 0.13f, crater);
+    gfx_circle(cx - r * 0.05f + turn, my + r * 0.45f, r * 0.10f, crater);
 
+    draw_birds(cx, cy, r, t);
     draw_cloud(cx, cy, r, t);
 }

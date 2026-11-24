@@ -704,6 +704,28 @@ int main(int argc, char **argv)
         printf("%d frames\n", written);
         return 0;
     }
+    if (argc > 4 && !strcmp(argv[2], "sky")) {
+        /* The Play tab's sky from argv[3] to argv[4] seconds (the clock run on to the start without drawing; an event
+         * starts on the first frame it's due), every quarter second as sky-SSS.ss.png: for the rare events. */
+        static Config sky = { .host = "192.168.1.100", .app = "Desktop", .width = 1280, .height = 720, .fps = 30,
+                              .bitrate_kbps = 8000, .decode = true, .draw = true, .audio_packet_ms = 20,
+                              .packet_size = 1392, .slices = 6 };
+        menu_open(&sky, "moonlight.ini");
+        const int from = (int)(atof(argv[3]) * 60.0), to = (int)(atof(argv[4]) * 60.0);
+        for (int f = 0; f < from; f++)
+            gfx_frame_begin(W, H);
+        for (int f = from; f < to; f++) {
+            if (f % 15) {
+                gfx_frame_begin(W, H);
+                menu_draw(W, H);
+                continue;
+            }
+            char name[32];
+            snprintf(name, sizeof name, "sky-%06.2f", f / 60.0);
+            shot_menu(dir, name);
+        }
+        return 0;
+    }
     if (argc > 3 && !strcmp(argv[2], "moon")) {
         /* The Play tab's sky over time: every third frame (20 a second) of argv[3] seconds, as moon-NNNN.png. */
         static Config sky = { .host = "192.168.1.100", .app = "Desktop", .width = 1280, .height = 720, .fps = 30,
