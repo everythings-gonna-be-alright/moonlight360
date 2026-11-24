@@ -42,6 +42,17 @@ static Event fireflies = { .next = 100.0f }, constellation = { .next = 120.0f },
 
 static uint32_t seed = 0x9E3779B9u;
 
+/* The sky's own clock, in seconds: it runs only while the sky is drawn, so after a stream or a while on another tab
+ * the events carry on where they were, not all due at once. */
+static float sky_seconds;
+static uint32_t last_frame;
+static bool drawn;
+
+void moon_skip(float seconds)
+{
+    sky_seconds += seconds;
+}
+
 /* xorshift32: lo to hi. */
 static float random_range(float lo, float hi)
 {
@@ -443,7 +454,12 @@ static void draw_fireflies(float cx, float cy, float r, float t)
 
 void moon_draw(float cx, float cy, float r)
 {
-    const float t = (float)gfx_frame() / FRAMES_PER_SECOND;
+    /* Frames since the last draw; after a gap of more than half a second (the sky wasn't shown), just one. */
+    const uint32_t frame = gfx_frame(), step = frame - last_frame;
+    sky_seconds += (float)(drawn && step <= 30 ? step : 1u) / FRAMES_PER_SECOND;
+    last_frame = frame;
+    drawn = true;
+    const float t = sky_seconds;
     const float breath = 0.5f + 0.5f * sinf(t * TAU / 6.0f);   /* 0 to 1 over 6 s */
     const float my = cy + 5.0f * sinf(t * TAU / 9.0f);         /* the moon floats up and down over 9 s */
     /* Craters drift a little, as if the moon turned slowly. */

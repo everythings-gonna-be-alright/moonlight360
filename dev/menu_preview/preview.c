@@ -15,6 +15,7 @@
 #include "config.h"
 #include "gfx.h"
 #include "menu.h"
+#include "moon.h"
 #include "overlay.h"
 #include "uisound.h"
 #include "discover.h"
@@ -714,6 +715,7 @@ int main(int argc, char **argv)
         const int from = (int)(atof(argv[3]) * 60.0), to = (int)(atof(argv[4]) * 60.0);
         for (int f = 0; f < from; f++)
             gfx_frame_begin(W, H);
+        moon_skip((float)from / 60.0f);   /* the sky's clock runs only while it's drawn */
         for (int f = from; f < to; f++) {
             if (f % 15) {
                 gfx_frame_begin(W, H);
