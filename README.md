@@ -48,10 +48,7 @@ Settings are saved to `moonlight.ini` next to the `.xex`. If something goes wron
 
 ## ⚡ Best settings and performance
 
-**Recommended: 1080p at 60 fps with a lean stream.** 🪶
-
-Time to decode one 1080p frame on the console, at about 22 Mbit/s. 60 fps needs under 16.7 ms a frame, 30 fps under
-33. A 60 fps frame decodes faster because it carries half the bits of a 30 fps frame at the same bitrate.
+**Recommended: 1080p at 60 fps and 30 Mbit/s, with a lean stream.** 🪶
 
 | Stream | On the PC | *Fast decode* | 1080p30 frame | 1080p60 frame |
 |---|---|---|---:|---:|
