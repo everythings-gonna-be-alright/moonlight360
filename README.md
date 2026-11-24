@@ -48,34 +48,57 @@ Settings are saved to `moonlight.ini` next to the `.xex`. If something goes wron
 
 ## ⚡ Best settings and performance
 
-**Recommended: 1080p at 60 fps and 30 Mbit/s, with a lean stream.** 🪶
+> [!WARNING]
+> **Wi-Fi has problems right now.** Over the console's Wi-Fi a stream can stop, and the console then stops
+> receiving anything until it's rebooted. The cause isn't found yet, so there's no fix. Use Ethernet for now.
 
-| Stream | On the PC | *Fast decode* | 1080p30 frame | 1080p60 frame |
+### Recommended
+
+**1080p · 60 fps · 30 Mbit/s, with a lean stream.** 🪶
+
+- **Measured:** a six-minute stream averaged 59 fps, with 40 ms from the PC to the screen.
+- **Trade-off:** the PC's processor does the encoding, and the picture is a little blockier.
+
+### Lean stream setup
+
+A lean stream leaves out the deblocking filter and sub-pixel motion: half of the console's decoding work.
+
+**On the PC** (the host's web UI):
+
+1. *Force a Specific Encoder* → **Software**
+2. *Software Encoder* → *SW Presets* → **ultrafast**
+
+**On the console:**
+
+3. **1920×1080**, **60 fps**, *Fast decode* off, *1080p picture* on (restart the app once after turning it on).
+4. Start a new stream. The stats HUD shows `CAVLC lean` when it worked.
+
+### No spare CPU on the PC?
+
+Keep the hardware encoder, with *Prefer CAVLC over CABAC* on:
+
+- 720p or 1600×900 at 60 fps
+- 1080p at 30 fps, with *Fast decode* on
+
+### Decode time per 1080p frame
+
+60 fps needs under 16.7 ms a frame, 30 fps under 33 ms.
+
+| Stream | On the PC | *Fast decode* | at 30 fps | at 60 fps |
 |---|---|---|---:|---:|
 | 🪶 **Lean** | Encoder **Software**, preset **ultrafast** | off | 17 ms | **12 ms** |
 | Hardware encoder | *Prefer CAVLC over CABAC* | on | 20 ms | 15 ms |
 | Hardware encoder | *Prefer CAVLC over CABAC* | off | 30 ms | 23 ms |
 
-**Lean stream setup.** It leaves out the deblocking filter and sub-pixel motion, half of the console's decoding work.
+### Experimental
 
-1. Host's web UI: *Force a Specific Encoder* → **Software**
-2. *Software Encoder* → *SW Presets* → **ultrafast**
-3. Console: **1920×1080**, **60 fps**, *Fast decode* off, *1080p picture* on (restart the app once after turning
-   it on). Start a new stream.
+- 🧪 **MPEG-2** (*Video* → *Video codec*): needs Sunshine with `mpeg2_mode = 2`; untested on a real host.
 
-The stats HUD shows `CAVLC lean` when it worked. A real six-minute 1080p60 stream at 30 Mbit/s averaged 59 fps and
-40 ms from the PC to the screen. The price: the PC's processor encodes, and the picture is a little blockier.
+### Under the hood
 
-**No spare CPU on the PC?** Keep the hardware encoder: 720p or 1600×900 at 60 fps, or 1080p at 30 with *Fast decode*.
-
-> [!WARNING]
-> **Wi-Fi has problems right now.** Over the console's Wi-Fi a stream can stop, and the console then stops
-> receiving anything until it's rebooted. The cause isn't found yet, so there's no fix. Use Ethernet for now.
-
-- 🧪 **MPEG-2** (*Video* → *Video codec*): experimental, needs Sunshine with `mpeg2_mode = 2`, untested on a real host.
-
-Under the hood: FFmpeg on all six hardware threads, vector code patched for the 360's CPU
-(`patches/ffmpeg-xenon-vmx128.patch`), 24 slices a frame shared between threads.
+- FFmpeg decodes on all six hardware threads.
+- Its vector code is patched for the 360's CPU (`patches/ffmpeg-xenon-vmx128.patch`).
+- Each frame comes as 24 slices, shared between the threads.
 
 ## 🛠️ Building
 
