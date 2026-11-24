@@ -225,6 +225,10 @@ static void stats_log(void)
         return;
     stats_log_due = false;
     fputs(stats_log_text, stdout);
+    PerfReadings perf;
+    perf_get(&perf);
+    if (perf.gpu >= 0)
+        printf("[I] stats: GPU %d%%, CPU %d%% average\n", perf.gpu, perf.cpu_average);
     if (refresh.frames) {
         printf("[I] stats: low-latency display: refresh %.3f ms, drawing reserve %.1f ms, drawing %.1f ms average "
                "%.1f ms longest, %u of %u frames missed their refresh\n", refresh.period_us / 1000.0,
@@ -702,7 +706,7 @@ int main(void)
         gfx_frame_begin(width, height);
         perf_gpu_frame_begin();
         if (streaming) {
-            if (!render_draw(width, height))
+            if (!render_draw(target_width, target_height))
                 draw_progress(width, height, &config, SESSION_STEP_PICTURE,
                               "Waiting for the first frame from the PC\xE2\x80\xA6");
             static HudStats hud;

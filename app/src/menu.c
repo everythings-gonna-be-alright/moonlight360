@@ -63,7 +63,7 @@ enum {
 enum {
     KEYBOARD_CHARS = 64,
     MIN_BITRATE_KBPS = 1000,
-    MAX_BITRATE_KBPS = 30000,
+    MAX_BITRATE_KBPS = 50000,
     BITRATE_STEP_KBPS = 1000,
     /* Held D-pad or stick: repeats after REPEAT_DELAY frames, then every REPEAT_RATE. */
     REPEAT_DELAY = 24,
@@ -852,7 +852,13 @@ static void item_help(int item, const char **help, const char **warning)
             *warning = LEAN_NOTICE;
         break;
     case ITEM_BITRATE:
-        *help = "Higher looks sharper. Over Ethernet up to 25-30 Mbps works; on the console's Wi-Fi keep 6 to 10.";
+        *help = "Higher looks sharper, and takes the console longer to decode. Over Ethernet 30 Mbps works at 1080p "
+                "and 60 fps; on the console's Wi-Fi keep 6 to 10.";
+        /* A lean 1080p60 stream decodes in 12.8 ms at 30 Mbps (logs, 2026-11-24) and about 1.25 ms more for every
+         * 100 kbit a frame (decbench): near 15 ms at 40 Mbps, past the 16.7 there are at 50. Not yet tried. */
+        if (config->bitrate_kbps > 40000 && config->height > 900 && config->fps > 30)
+            *warning = "Past 40 Mbps the console probably can't decode 1080p at 60 fps in time: frames would drop. "
+                       "Watch the stats.";
         break;
     case ITEM_FAST_DECODE:
         *help = "Skips H.264's deblocking filter: about 30% faster decoding, a slightly blockier picture. Needed for "
