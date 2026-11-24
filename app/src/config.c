@@ -54,6 +54,7 @@ bool config_load(const char *path, Config *c)
     c->hud_size = HUD_MEDIUM;
     c->rumble = true;
     c->pointer_speed = 1;
+    c->picture_1080p = true;   /* 1920x1080 on a 1080p TV; xsdk shows 1280x720 on any other */
     c->wake_on_lan = false;
     c->host_mac[0] = 0;
     c->app_id = 0;
@@ -120,8 +121,8 @@ bool config_load(const char *path, Config *c)
             c->hud_size = v >= 0 && v < HUD_SIZES ? v : HUD_MEDIUM;
         } else if (!strcmp(key, "rumble"))
             c->rumble = atoi(value) != 0;
-        else if (!strcmp(key, "picture"))
-            c->picture_1080p = atoi(value) == 1080;
+        else if (!strcmp(key, "picture_mode"))   /* "picture" (1080 or 720) is no longer read: 720 was its default */
+            c->picture_1080p = atoi(value) != 720;
         else if (!strcmp(key, "pointer_speed")) {
             const int v = atoi(value);
             c->pointer_speed = v >= 0 && v < POINTER_SPEEDS ? v : 1;
@@ -233,14 +234,14 @@ bool config_save(const char *path, const Config *c)
             "menu_combo=%d\n"
             "# pointer_speed: mouse mode's pointer, 0 slow, 1 normal, 2 fast\n"
             "pointer_speed=%d\n"
-            "# picture=1080: a 1920x1080 picture on a 1080p TV, not 1280x720 scaled up; read when the app starts.\n"
-            "# If the screen stays black or scrambled with it, set picture=720 here.\n"
-            "picture=%d\n",
+            "# picture_mode=auto: 1920x1080 on a 1080p TV, 1280x720 on any other; read when the app starts.\n"
+            "# picture_mode=720: always 1280x720 (if the screen stays black or scrambled with auto).\n"
+            "picture_mode=%s\n",
             c->host, c->app, c->width, c->height, c->fps, c->bitrate_kbps, c->stats_mode,
             c->fast_decode ? 1 : 0, c->audio_packet_ms, c->audio_on_host ? 1 : 0, c->low_latency ? 1 : 0, c->decode ? 1 : 0, c->draw ? 1 : 0, c->packet_size, c->slices,
             c->codec == CODEC_MPEG2 ? "mpeg2" : "h264", c->logging ? 1 : 0, c->ui_sounds ? 1 : 0, c->theme, c->auto_resume ? 1 : 0, c->hud_corner, c->hud_size,
             c->rumble ? 1 : 0, c->wake_on_lan ? 1 : 0, c->host_mac, c->app_id,
-            c->show_recent ? 1 : 0, c->menu_combo, c->pointer_speed, c->picture_1080p ? 1080 : 720);
+            c->show_recent ? 1 : 0, c->menu_combo, c->pointer_speed, c->picture_1080p ? "auto" : "720");
     for (int i = 0; i < CONFIG_RECENT && c->recent_name[i][0]; i++)
         fprintf(f, "recent%d=%d|%s\n", i + 1, c->recent_id[i], c->recent_name[i]);
     fclose(f);

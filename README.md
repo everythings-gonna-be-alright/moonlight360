@@ -18,7 +18,7 @@ open-source [xsdk](https://github.com/xenosworks/xsdk): no Microsoft XDK involve
 
 - Pair, pick an app, play. Launch, resume and quit games on the PC.
 - H.264 video from 360p to 1080p, at 30 or 60 fps. Opus stereo audio. Controllers 1–4 with rumble.
-- A true 1080p picture on a 1080p TV (*Video → 1080p picture*), not 720p scaled up by the console.
+- A true 1080p picture on a 1080p TV, not 720p scaled up by the console; a 720p TV gets 720p. Automatic.
 - A stats HUD: frame rate, latency by stage, ping, packet loss, CPU and GPU load and temperatures. 🥵
 - Low-latency display, and controllers read 500 times a second.
 - Mouse and keyboard from the controller: a mouse mode, typing with the on-screen keyboard, and keys like Esc,
@@ -70,7 +70,7 @@ A lean stream leaves out the deblocking filter and sub-pixel motion: half of the
 
 **On the console:**
 
-3. **1920×1080**, **60 fps**, *Fast decode* off, *1080p picture* on (restart the app once after turning it on).
+3. **1920×1080**, **60 fps**, *Fast decode* off.
 4. Start a new stream. The stats HUD shows `CAVLC lean` when it worked.
 
 ### No spare CPU on the PC?

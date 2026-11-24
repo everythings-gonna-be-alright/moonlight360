@@ -863,9 +863,9 @@ static void item_help(int item, const char **help, const char **warning)
                 "1080p, unless the PC sends a lean stream (then leave it off).";
         break;
     case ITEM_PICTURE:
-        *help = "Draws a 1920x1080 picture, shown pixel for pixel on a 1080p TV, so a 1080p stream keeps all its "
-                "detail. Off, the picture is 1280x720 and the console scales it up. Takes effect the next time the "
-                "app starts.";
+        *help = "On a 1080p TV, draws a 1920x1080 picture shown pixel for pixel, so a 1080p stream keeps all its "
+                "detail; on a 720p TV the picture stays 1280x720. Off, it's always 1280x720, scaled up by the "
+                "console. Takes effect the next time the app starts.";
         break;
     case ITEM_LOW_LATENCY:
         *help = "Draws each frame the moment it's decoded instead of on a fixed beat, so it reaches the TV up to a "
