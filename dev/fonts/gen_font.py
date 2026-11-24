@@ -37,6 +37,7 @@ SIZES = [
     (4, "SemiBold", 75, SMALL),
     (0.8, "Medium", 15, FULL),
     (0.7, "Medium", 13, FULL),
+    (1, "SemiBold", 18, [ord(c) for c in " ABXY"]),   # the controller buttons' letters (gfx_button)
 ]
 
 # The menus' icons (icons.h's Icon, in its order): Material Symbols Rounded names, from dev/fonts/

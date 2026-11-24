@@ -46,6 +46,7 @@ enum {
     ITEM_WAKE,
     ITEM_VIDEO_TEST,
     ITEM_SHOW_RECENT,
+    ITEM_MENU_COMBO,
     ITEMS,
 };
 
@@ -83,6 +84,7 @@ enum {
     COVER_W = 180,
     COVER_H = 240,
     COVER_GAP = 28,
+    COVER_RADIUS = 16,   /* covers' corners, in the cover's own 192x256 pixels (about 15 on screen in the picker) */
 };
 
 typedef struct {
@@ -96,8 +98,8 @@ static const Tab tabs[TABS] = {
     { "Video", 9, { ITEM_RESOLUTION, ITEM_FPS, ITEM_BITRATE, ITEM_CODEC, ITEM_LOW_LATENCY, ITEM_FAST_DECODE,
                    ITEM_STATS, ITEM_HUD_CORNER, ITEM_HUD_SIZE } },
     { "Network", 4, { ITEM_WAKE, ITEM_AUDIO_PACKETS, ITEM_PACKET_SIZE, ITEM_SLICES } },
-    { "Other", 8, { ITEM_AUTO_RESUME, ITEM_SHOW_RECENT, ITEM_AUDIO_ON_HOST, ITEM_SOUNDS, ITEM_RUMBLE, ITEM_THEME,
-                    ITEM_VIDEO_TEST, ITEM_LOGGING } },
+    { "Other", 9, { ITEM_AUTO_RESUME, ITEM_SHOW_RECENT, ITEM_MENU_COMBO, ITEM_AUDIO_ON_HOST, ITEM_SOUNDS, ITEM_RUMBLE,
+                    ITEM_THEME, ITEM_VIDEO_TEST, ITEM_LOGGING } },
     { "About", 0, { 0 } },
 };
 
@@ -318,6 +320,9 @@ static void change(int item, int step)
         break;
     case ITEM_SHOW_RECENT:
         config->show_recent = !config->show_recent;
+        break;
+    case ITEM_MENU_COMBO:
+        config->menu_combo = step_choice(config->menu_combo, MENU_COMBOS, step);
         break;
     case ITEM_WAKE:
         config->wake_on_lan = !config->wake_on_lan;
@@ -835,10 +840,15 @@ static void item_help(int item, const char **help, const char **warning)
         *help = "Draws each frame the moment it's decoded instead of on a fixed beat, so it reaches the TV up to a "
                 "refresh sooner. No tearing. Turn it off if the picture stutters.";
         break;
-    case ITEM_STATS:
-        *help = "What shows over the game. Compact: frame rate, latency, ping and loss in one line. Detailed: where the "
-                "latency goes, the network and the console's load. Also changes in the stream menu (hold Back).";
+    case ITEM_STATS: {
+        static char text[320];
+        snprintf(text, sizeof text,
+                 "What shows over the game. Compact: frame rate, latency, ping and loss in one line. Detailed: where "
+                 "the latency goes, the network and the console's load. Also changes in the stream menu (hold %s).",
+                 menu_combo_name(config->menu_combo));
+        *help = text;
         break;
+    }
     case ITEM_AUDIO_ON_HOST:
         *help = "Where the game's sound plays. Apollo/Sunshine still send the audio stream either way, so this "
                 "doesn't lighten the console's Wi-Fi.";
@@ -892,6 +902,10 @@ static void item_help(int item, const char **help, const char **warning)
         break;
     case ITEM_SHOW_RECENT:
         *help = "Shows the apps you streamed lately as covers on the Play tab, for one press to stream them again.";
+        break;
+    case ITEM_MENU_COMBO:
+        *help = "What you hold for a second while streaming to open the stream menu. The game also gets the press: "
+                "pick one it doesn't use much.";
         break;
     case ITEM_WAKE:
         *help = "Wakes a sleeping PC (Wake-on-LAN) before connecting. Wake-on-LAN must be on in the PC's BIOS and "
@@ -1067,6 +1081,12 @@ static void draw_value(int item, int32_t right, int32_t y, int32_t cy, bool sele
     case ITEM_SHOW_RECENT:
         draw_switch(right, cy, config->show_recent);
         break;
+    case ITEM_MENU_COMBO: {
+        char label[32];
+        snprintf(label, sizeof label, "Hold %s", menu_combo_name(config->menu_combo));
+        draw_choice(right, y, label, selected, text);
+        break;
+    }
     case ITEM_WAKE:
         draw_switch(right, cy, config->wake_on_lan);
         break;
@@ -1139,6 +1159,7 @@ static const char *item_label(int item)
     case ITEM_HUD_SIZE: return "Stats size";
     case ITEM_RUMBLE: return "Rumble";
     case ITEM_SHOW_RECENT: return "Recent apps";
+    case ITEM_MENU_COMBO: return "Stream menu";
     case ITEM_WAKE: return "Wake the PC";
     case ITEM_VIDEO_TEST: return "Video test";
     case ITEM_THEME: return "Theme";
@@ -1173,6 +1194,7 @@ static Icon item_icon(int item)
     case ITEM_HUD_SIZE: return ICON_STATS;
     case ITEM_RUMBLE: return ICON_RUMBLE;
     case ITEM_SHOW_RECENT: return ICON_APP;
+    case ITEM_MENU_COMBO: return ICON_KEYBOARD;
     case ITEM_WAKE: return ICON_WAKE;
     case ITEM_VIDEO_TEST: return ICON_TEST;
     case ITEM_THEME: return ICON_THEME;
@@ -1305,7 +1327,7 @@ static const char *section_before(int t, int i)
     if (t == TAB_VIDEO)   /* Resolution, Frame rate, Bitrate, Codec | Low-latency, Fast decode | Stats, position, size */
         return i == 0 ? "QUALITY" : i == 4 ? "PERFORMANCE" : i == 6 ? "STATS" : NULL;
     if (t == TAB_OTHER)
-        return i == 0 ? "GENERAL" : i == 2 ? "SOUND" : i == 5 ? "APPEARANCE" : i == 6 ? "DEBUG" : NULL;
+        return i == 0 ? "GENERAL" : i == 3 ? "SOUND" : i == 6 ? "APPEARANCE" : i == 7 ? "DEBUG" : NULL;
     return NULL;
 }
 
@@ -1461,7 +1483,7 @@ static GfxImage *play_cover(int id)
     if (!pixels)
         return NULL;
     gfx_image_free(cache[oldest].image);
-    cache[oldest].image = gfx_image_create(pixels, APPS_COVER_W, APPS_COVER_H);
+    cache[oldest].image = gfx_image_create_rounded(pixels, APPS_COVER_W, APPS_COVER_H, COVER_RADIUS);
     cache[oldest].id = id;
     cache[oldest].used = gfx_frame();
     return cache[oldest].image;
@@ -1489,7 +1511,7 @@ static void draw_play_covers(void)
     const float lift = LIFT * ring_alpha;
     if (ring_alpha > 0.02f) {
         const uint32_t a = (uint32_t)(ring_alpha * 255.0f) << 24;
-        gfx_rect(ring_x - 5.0f, ty - lift - 5.0f, TILE_W + 10.0f, TILE_H + 10.0f, 12.0f, a | (THEME_ACCENT & 0x00FFFFFF));
+        gfx_rect(ring_x - 5.0f, ty - lift - 5.0f, TILE_W + 10.0f, TILE_H + 10.0f, 12.5f, a | (THEME_ACCENT & 0x00FFFFFF));
     }
     for (int i = 0; i < n; i++) {
         const bool on = recent_focus && i == recent_index;
@@ -1497,13 +1519,13 @@ static void draw_play_covers(void)
         /* The focused tile rises with the ring; on the row, the others dim so it stands out. */
         const float y = ty - (i == recent_index ? lift : 0.0f);
         if (!on)
-            gfx_rect(x - 1.0f, y - 1.0f, TILE_W + 2.0f, TILE_H + 2.0f, 4.0f, THEME_BORDER);
+            gfx_rect(x - 1.0f, y - 1.0f, TILE_W + 2.0f, TILE_H + 2.0f, 8.5f, THEME_BORDER);
         GfxImage *image = play_cover(config->recent_id[i]);
         const uint32_t tint = !recent_focus || on ? 0xFFFFFFFF : 0xFF7A7A7A;
         if (image) {
             gfx_image(image, x, y, TILE_W, TILE_H, tint);
         } else {
-            gfx_rect(x, y, TILE_W, TILE_H, 4.0f, THEME_SURFACE);
+            gfx_rect(x, y, TILE_W, TILE_H, 7.5f, THEME_SURFACE);
             const char initial[2] = { config->recent_name[i][0] ? config->recent_name[i][0] : '?', 0 };
             gfx_text_center((int32_t)(x + TILE_W / 2), (int32_t)(y + TILE_H / 2 - 20), 2,
                             on ? THEME_ACCENT_TEXT : THEME_TEXT_3, initial);
@@ -1534,7 +1556,7 @@ static void draw_play_tab(void)
     if (config->host[0]) {
         gfx_text(x, y, 1, THEME_ACCENT_TEXT, "READY TO STREAM");
         y += 30;
-        gfx_fit(line, sizeof line, config->app, 20);
+        gfx_fit_width(line, sizeof line, config->app, 3, 700);   /* up to the moon's halo */
         gfx_text(x, y, 3, THEME_TEXT, line);
         y += 72;
         const int r = resolution_index();
@@ -1579,8 +1601,10 @@ static void draw_play_tab(void)
         draw_item_icon(rows[i], y + ROW_H / 2, sel);
         gfx_text(LABEL_X, ty, 2, sel ? THEME_TEXT : THEME_TEXT_2, item_label(rows[i]));
         const char *value = rows[i] == ITEM_APP ? config->app : config->host[0] ? config->host : "Not set";
-        gfx_fit(line, sizeof line, value, 16);
         const int32_t right = CONTENT_X + (int32_t)rw - 24;
+        /* As wide as fits between the label and the chevron. */
+        gfx_fit_width(line, sizeof line, value, 2,
+                      right - 30 - (LABEL_X + gfx_text_width(item_label(rows[i]), 2) + 24));
         gfx_text(right - gfx_text_width("\xE2\x80\xBA", 2), ty, 2, sel ? THEME_ACCENT : THEME_TEXT_3,
                  "\xE2\x80\xBA");   /* U+203A */
         gfx_text_right(right - 30, ty, 2,
@@ -1643,8 +1667,10 @@ static void draw_play_tab(void)
             gfx_text(CONTENT_X + 46, (int32_t)my + 12, 1, error ? THEME_ERROR_TEXT : THEME_TEXT_2, wrapped);
         }
     } else {
-        gfx_text(x, THEME_PANEL_BOTTOM - 20, 1, THEME_TEXT_3,
-                 "While streaming, hold BACK for a second to open the stream menu.");
+        char tip[96];
+        snprintf(tip, sizeof tip, "While streaming, hold %s for a second to open the stream menu.",
+                 menu_combo_name(config->menu_combo));
+        gfx_text(x, THEME_PANEL_BOTTOM - 20, 1, THEME_TEXT_3, tip);
     }
 }
 
@@ -1705,11 +1731,11 @@ static void draw_cover(int i, float x, float y, float w, float h, bool on, float
     apps_get(i, name, sizeof name, &running);
     const uint32_t a = (uint32_t)(alpha * 255.0f + 0.5f) << 24;
     if (on)   /* the outline, a little outside the cover */
-        gfx_rect(x - 5.0f, y - 5.0f, w + 10.0f, h + 10.0f, 12.0f, a | (THEME_ACCENT & 0x00FFFFFF));
+        gfx_rect(x - 5.0f, y - 5.0f, w + 10.0f, h + 10.0f, 19.0f, a | (THEME_ACCENT & 0x00FFFFFF));
     if (cover_images[i]) {
         gfx_image(cover_images[i], x, y, w, h, a | (on ? 0xFFFFFF : 0x8A8A8A));
     } else {
-        gfx_rect(x, y, w, h, 8.0f, a | (THEME_SURFACE & 0x00FFFFFF));
+        gfx_rect(x, y, w, h, 15.0f, a | (THEME_SURFACE & 0x00FFFFFF));
         gfx_rect(x, y, w, 4.0f, 2.0f, a | ((on ? THEME_ACCENT : THEME_ACCENT_SOFT) & 0x00FFFFFF));
         const char initial[2] = { name[0] ? name[0] : '?', 0 };
         gfx_text_center((int32_t)(x + w / 2), (int32_t)(y + h / 2 - 40), 4,
@@ -1762,7 +1788,7 @@ static void draw_picker(void)
     for (int i = 0, made = 0; i < n && made < 2; i++) {
         const uint8_t *pixels = cover_images[i] ? NULL : apps_cover(i);
         if (pixels) {
-            cover_images[i] = gfx_image_create(pixels, APPS_COVER_W, APPS_COVER_H);
+            cover_images[i] = gfx_image_create_rounded(pixels, APPS_COVER_W, APPS_COVER_H, COVER_RADIUS);
             made++;
         }
     }

@@ -1,6 +1,7 @@
 /* moonlight.ini beside the .xex. */
 #pragma once
 #include <stdbool.h>
+#include <stdint.h>
 
 /* The video codec asked of the host. MPEG-2 is a Sunshine extension (its mpeg2_mode = 2); a host without it sends
  * H.264. */
@@ -11,6 +12,8 @@ enum { STATS_OFF, STATS_COMPACT, STATS_DETAILED, STATS_MODES };
 enum { CONFIG_RECENT = 4 };
 /* Where the stats HUD sits. */
 typedef enum { HUD_TOP_LEFT, HUD_TOP_RIGHT, HUD_BOTTOM_LEFT, HUD_BOTTOM_RIGHT, HUD_CORNERS } HudCorner;
+/* What, held for a second while streaming, opens the stream menu (config.c's menu_combo_buttons gives the buttons). */
+typedef enum { COMBO_BACK, COMBO_START, COMBO_BACK_START, COMBO_LB_RB, MENU_COMBOS } MenuCombo;
 /* How big the stats HUD is: 70%, 80% and 100% of the size it's laid out at (ui.c). */
 typedef enum { HUD_SMALL, HUD_MEDIUM, HUD_LARGE, HUD_SIZES } HudSize;
 
@@ -39,6 +42,7 @@ typedef struct {
     int theme;          /* the accent colour: an index into themes (theme.c), 0 orange */
     bool auto_resume;   /* on start, reconnect to the last app straight away (main.c) */
     bool show_recent;   /* the Play tab's Recent row */
+    int menu_combo;     /* MenuCombo */
     int hud_corner;     /* HudCorner */
     int hud_size;       /* HudSize */
     bool rumble;        /* pass the PC's controller rumble on to the pads */
@@ -60,3 +64,6 @@ bool config_save(const char *path, const Config *config);
 void config_add_recent(Config *config, int id, const char *name);
 /* Takes recent app i off the list, the ones after it moving up. */
 void config_remove_recent(Config *config, int i);
+/* The buttons combo needs held together (INPUT_GAMEPAD_ bits), and its name ("Back", "Back + Start"...). */
+uint16_t menu_combo_buttons(int combo);
+const char *menu_combo_name(int combo);

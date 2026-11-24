@@ -381,7 +381,7 @@ static uint32_t next_point(const char **text)
 static const FontGlyph *find_glyph(int size, uint32_t point)
 {
     const FontGlyph *g = font_sizes[size].glyphs;
-    if (point >= 0x20 && point < 0x7F)
+    if (point >= 0x20 && point < 0x7F && font_sizes[size].glyph_count >= 0x7F - 0x20)   /* sizes with all of ASCII */
         return &g[point - 0x20];
     int lo = 0, hi = font_sizes[size].glyph_count - 1;
     while (lo <= hi) {
@@ -397,9 +397,9 @@ static const FontGlyph *find_glyph(int size, uint32_t point)
 }
 
 /* The glyph to draw point with at scale, and how much to stretch it: a big size lacking it borrows size 2's. */
-/* font_data.h's last sizes: scale 1 at 80% and at 70% (gfx_scale_begin). */
-enum { SIZE_80 = 4, SIZE_70 = 5 };
-_Static_assert(FONT_SIZES == 6, "gen_font.py's sizes: 1, 2, 3, 4, 0.8, 0.7");
+/* font_data.h's last sizes: scale 1 at 80% and at 70% (gfx_scale_begin), and the buttons' bold letters. */
+enum { SIZE_80 = 4, SIZE_70 = 5, SIZE_BUTTON = 6 };
+_Static_assert(FONT_SIZES == 7, "gen_font.py's sizes: 1, 2, 3, 4, 0.8, 0.7, the buttons' letters");
 
 static const FontGlyph *glyph_for(uint32_t scale, uint32_t point, float *stretch)
 {
@@ -477,6 +477,36 @@ GfxImage *gfx_image_create(const uint8_t *rgba, int width, int height)
     }
     xsdk_texture_upload(&image->texture, 0, rgba, (uint32_t)width * 4);
     xsdk_gpu_invalidate(image->texture.address, image->texture.size_bytes);
+    return image;
+}
+
+GfxImage *gfx_image_create_rounded(const uint8_t *rgba, int width, int height, float radius)
+{
+    if (!rgba || width <= 0 || height <= 0)
+        return NULL;
+    uint8_t *copy = malloc((size_t)width * height * 4);
+    if (!copy)
+        return gfx_image_create(rgba, width, height);
+    memcpy(copy, rgba, (size_t)width * height * 4);
+    /* Each corner's square: alpha from the pixel centre's distance past the corner's circle, a pixel's width of
+     * fade, so the edge is smooth. */
+    const int r = (int)ceilf(radius);
+    for (int y = 0; y < r && y < height; y++)
+        for (int x = 0; x < r && x < width; x++) {
+            const float dx = radius - ((float)x + 0.5f), dy = radius - ((float)y + 0.5f);
+            const float past = sqrtf(dx * dx + dy * dy) - radius + 0.5f;
+            if (past <= 0.0f)
+                continue;
+            const float keep = past >= 1.0f ? 0.0f : 1.0f - past;
+            const int xs[2] = { x, width - 1 - x }, ys[2] = { y, height - 1 - y };
+            for (int a = 0; a < 2; a++)
+                for (int b = 0; b < 2; b++) {
+                    uint8_t *alpha = &copy[((size_t)ys[b] * width + xs[a]) * 4 + 3];
+                    *alpha = (uint8_t)(*alpha * keep + 0.5f);
+                }
+        }
+    GfxImage *image = gfx_image_create(copy, width, height);
+    free(copy);
     return image;
 }
 
@@ -588,6 +618,27 @@ static bool continuation(unsigned char c)
     return (c & 0xC0) == 0x80;
 }
 
+void gfx_fit_width(char *out, size_t size, const char *in, uint32_t scale, int32_t max_width)
+{
+    snprintf(out, size, "%s", in);
+    if (gfx_text_width(out, scale) <= max_width)
+        return;
+    /* Shorter by a character at a time (whole UTF-8 sequences), with an ellipsis, until it fits. */
+    size_t n = strlen(out);
+    char trial[512];
+    while (n > 0) {
+        do
+            n--;
+        while (n > 0 && continuation((unsigned char)out[n]));
+        while (n > 0 && out[n - 1] == ' ')
+            n--;
+        snprintf(trial, sizeof trial, "%.*s\xE2\x80\xA6", (int)n, out);
+        if (gfx_text_width(trial, scale) <= max_width)
+            break;
+    }
+    snprintf(out, size, "%s", trial);
+}
+
 void gfx_fit(char *out, size_t size, const char *in, int max_chars)
 {
     int chars = 0;
@@ -671,10 +722,14 @@ int32_t gfx_button(int32_t x, int32_t center_y, char button)
     case 'Y': {
         const uint32_t colour = button == 'A' ? BUTTON_A : button == 'B' ? BUTTON_B : button == 'X' ? BUTTON_X : BUTTON_Y;
         gfx_circle((float)x + 14.0f, cy, 14.0f, colour);
-        const char letter[2] = { button, 0 };
-        /* Twice, a pixel apart: a bolder letter. */
-        gfx_text(x + 9, center_y - 10, 1, BUTTON_INK, letter);
-        gfx_text(x + 10, center_y - 10, 1, BUTTON_INK, letter);
+        /* The letter, bold, its ink centred on the circle, whole pixels. */
+        const FontGlyph *g = find_glyph(SIZE_BUTTON, (uint32_t)button);
+        if (g && ready) {
+            flush_shapes();
+            const float colour[4] = { channel(BUTTON_INK >> 16), channel(BUTTON_INK >> 8), channel(BUTTON_INK),
+                                      channel(BUTTON_INK >> 24) };
+            put_glyph(g, floorf((float)x + 14.0f - g->w / 2.0f + 0.5f), floorf(cy - g->h / 2.0f + 0.5f), 1.0f, colour);
+        }
         return 28;
     }
     case 'L':

@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "input.h"
+
 static char *trim(char *s)
 {
     while (isspace((unsigned char)*s))
@@ -47,6 +49,7 @@ bool config_load(const char *path, Config *c)
     c->theme = 0;
     c->auto_resume = false;
     c->show_recent = true;
+    c->menu_combo = COMBO_BACK;
     c->hud_corner = HUD_TOP_LEFT;
     c->hud_size = HUD_MEDIUM;
     c->rumble = true;
@@ -104,6 +107,10 @@ bool config_load(const char *path, Config *c)
             c->auto_resume = atoi(value) != 0;
         else if (!strcmp(key, "show_recent"))
             c->show_recent = atoi(value) != 0;
+        else if (!strcmp(key, "menu_combo")) {
+            const int v = atoi(value);
+            c->menu_combo = v >= 0 && v < MENU_COMBOS ? v : COMBO_BACK;
+        }
         else if (!strcmp(key, "hud_corner")) {
             const int v = atoi(value);
             c->hud_corner = v >= 0 && v < HUD_CORNERS ? v : HUD_TOP_LEFT;
@@ -213,12 +220,15 @@ bool config_save(const char *path, const Config *c)
             "# app_id: the host's id for app (for its cover); recent1-4: apps streamed lately, \"id|name\"\n"
             "app_id=%d\n"
             "# show_recent=0 hides the Play tab's Recent row\n"
-            "show_recent=%d\n",
+            "show_recent=%d\n"
+            "# menu_combo: held a second while streaming, opens the stream menu: 0 Back, 1 Start, 2 Back + Start,\n"
+            "# 3 LB + RB\n"
+            "menu_combo=%d\n",
             c->host, c->app, c->width, c->height, c->fps, c->bitrate_kbps, c->stats_mode,
             c->fast_decode ? 1 : 0, c->audio_packet_ms, c->audio_on_host ? 1 : 0, c->low_latency ? 1 : 0, c->decode ? 1 : 0, c->draw ? 1 : 0, c->packet_size, c->slices,
             c->codec == CODEC_MPEG2 ? "mpeg2" : "h264", c->logging ? 1 : 0, c->ui_sounds ? 1 : 0, c->theme, c->auto_resume ? 1 : 0, c->hud_corner, c->hud_size,
             c->rumble ? 1 : 0, c->wake_on_lan ? 1 : 0, c->host_mac, c->app_id,
-            c->show_recent ? 1 : 0);
+            c->show_recent ? 1 : 0, c->menu_combo);
     for (int i = 0; i < CONFIG_RECENT && c->recent_name[i][0]; i++)
         fprintf(f, "recent%d=%d|%s\n", i + 1, c->recent_id[i], c->recent_name[i]);
     fclose(f);
@@ -257,4 +267,20 @@ void config_remove_recent(Config *c, int i)
     }
     c->recent_id[CONFIG_RECENT - 1] = 0;
     c->recent_name[CONFIG_RECENT - 1][0] = 0;
+}
+
+uint16_t menu_combo_buttons(int combo)
+{
+    switch (combo) {
+    case COMBO_START: return INPUT_GAMEPAD_START;
+    case COMBO_BACK_START: return INPUT_GAMEPAD_BACK | INPUT_GAMEPAD_START;
+    case COMBO_LB_RB: return INPUT_GAMEPAD_LEFT_SHOULDER | INPUT_GAMEPAD_RIGHT_SHOULDER;
+    default: return INPUT_GAMEPAD_BACK;
+    }
+}
+
+const char *menu_combo_name(int combo)
+{
+    static const char *const names[MENU_COMBOS] = { "Back", "Start", "Back + Start", "LB + RB" };
+    return names[combo >= 0 && combo < MENU_COMBOS ? combo : COMBO_BACK];
 }

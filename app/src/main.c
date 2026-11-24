@@ -48,7 +48,6 @@ enum {
     BEGIN_TIMEOUT_MS = 5000,
 
     /* Held for MENU_HOLD_MS while streaming: opens the stream menu. */
-    MENU_COMBO = INPUT_GAMEPAD_BACK,
     MENU_HOLD_MS = 1000,
 };
 
@@ -746,7 +745,8 @@ int main(void)
         } else if (streaming) {
             bool combo = false;
             for (int i = 0; i < INPUT_PADS; i++)
-                combo |= (input.buttons[i] & MENU_COMBO) == MENU_COMBO;
+                combo |= (input.buttons[i] & menu_combo_buttons(config.menu_combo)) ==
+                         menu_combo_buttons(config.menu_combo);
             if (!combo) {
                 combo_held_since = 0;
             } else if (!combo_held_since) {

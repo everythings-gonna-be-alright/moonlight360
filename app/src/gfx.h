@@ -26,6 +26,8 @@ void gfx_scale_end(void);
 /* An image in GPU memory (RGBA bytes, row after row), drawn with gfx_image. */
 typedef struct GfxImage GfxImage;
 GfxImage *gfx_image_create(const uint8_t *rgba, int width, int height);
+/* The same with its corners rounded to radius (in the image's pixels): transparent past them, smoothly. */
+GfxImage *gfx_image_create_rounded(const uint8_t *rgba, int width, int height, float radius);
 /* Waits for the GPU to be done with it first. */
 void gfx_image_free(GfxImage *image);
 /* The image stretched over (x, y, w, h), its colours times argb's (0xFFFFFFFF as it is; lower alpha fades it). */
@@ -48,6 +50,8 @@ void gfx_text_center(int32_t center_x, int32_t y, uint32_t scale, uint32_t argb,
 void gfx_text_right(int32_t right, int32_t y, uint32_t scale, uint32_t argb, const char *utf8);
 /* Copies in, cut to max_chars characters with an ellipsis if longer. */
 void gfx_fit(char *out, size_t size, const char *in, int max_chars);
+/* in into out, cut with an ellipsis if it's wider than max_width pixels at scale. */
+void gfx_fit_width(char *out, size_t size, const char *in, uint32_t scale, int32_t max_width);
 /* Copies in, with line breaks at spaces so no line passes max_chars characters. Returns the line count. */
 int gfx_wrap(char *out, size_t size, const char *in, int max_chars);
 
