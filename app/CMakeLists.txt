@@ -85,4 +85,4 @@ target_link_options(moonlight360 PRIVATE -Wl,--wrap=pthread_create -Wl,--wrap=se
 target_link_libraries(moonlight360 PRIVATE gamestream moonlight-common-c opus
   "${FFMPEG_PREFIX}/lib/libavcodec.a" "${FFMPEG_PREFIX}/lib/libavutil.a")
 xsdk_add_shaders(moonlight360 shaders/yuv.vert shaders/yuv.frag shaders/shape.vert shaders/shape.frag shaders/font.vert shaders/font.frag shaders/image.vert shaders/image.frag)
-xsdk_add_xex(moonlight360 NAME "Moonlight 360" VERSION 0.3.2.0)
+xsdk_add_xex(moonlight360 NAME "Moonlight 360" VERSION 0.3.0.0)
