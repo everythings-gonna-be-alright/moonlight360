@@ -1,5 +1,6 @@
 #include "menu.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -739,8 +740,8 @@ static MenuAction update(const InputState *input)
 }
 
 /* Start streaming answers the press before the menu gives way to the connection's steps: the main button dips, springs
- * back and glows (draw_play_tab), about a quarter of a second. */
-enum { LAUNCH_FRAMES = 16 };
+ * back and glows, light sweeps across it and its arrow shoots off (draw_play_tab), about 0.4 s. */
+enum { LAUNCH_FRAMES = 24 };
 static bool launching;
 static uint32_t launch_frame;
 
@@ -1600,17 +1601,18 @@ static void draw_play_tab(void)
     }
     y += 48;
 
-    /* The main button. Pressed, it dips for a third of the time, then springs back a little past its size while a
-     * glow of its colour spreads from it and a flash fades off it. */
+    /* The main button. Pressed, it dips for a quarter of the time, then springs back a little past its size while a
+     * glow of its colour spreads from it, a flash fades off it and a band of light sweeps across it; its arrow shoots
+     * off to the right and comes back in from the left. */
     const float bx = (float)x, by = (float)y, bw = 440.0f, bh = 60.0f;
     const bool on = item == ITEM_CONNECT;
     const float launch = launching ? (float)(gfx_frame() - launch_frame) / LAUNCH_FRAMES : -1.0f;
-    const float dip = 0.35f, spring = launch < dip ? 0.0f : (launch > 1.0f ? 1.0f : launch - dip) / (1.0f - dip);
+    const float dip = 0.25f, spring = launch < dip ? 0.0f : (launch > 1.0f ? 1.0f : launch - dip) / (1.0f - dip);
     if (launch >= 0.0f) {
         const float down = launch < dip ? launch / dip : 1.0f, back = spring - 1.0f;
-        /* Down eases out; back overshoots (the "back" curve), ending at 1. */
-        const float size = launch < dip ? 1.0f - 0.07f * (1.0f - (1.0f - down) * (1.0f - down))
-                                        : 0.93f + 0.07f * (1.0f + 2.70158f * back * back * back + 1.70158f * back * back);
+        /* Down eases out; back overshoots (the "back" curve, a little more than the standard one), ending at 1. */
+        const float size = launch < dip ? 1.0f - 0.08f * (1.0f - (1.0f - down) * (1.0f - down))
+                                        : 0.92f + 0.08f * (1.0f + 3.2f * back * back * back + 2.2f * back * back);
         if (launch >= dip) {
             const float spread = 8.0f + 26.0f * spring;
             const uint32_t glow = (uint32_t)(150.0f * (1.0f - spring)) << 24 | (THEME_ACCENT & 0x00FFFFFF);
@@ -1628,10 +1630,36 @@ static void draw_play_tab(void)
     const char *label = !config->host[0]                           ? "Find your PC"
                         : message[0] && message_is_error(message) ? "\xE2\x86\xBB  Try again"
                                                                   : ARROW_RIGHT "  Start streaming";
-    gfx_text_center((int32_t)(bx + bw / 2), (int32_t)by + 10, 2, on ? THEME_ON_ACCENT : THEME_TEXT_2, label);
+    const uint32_t ink = on ? THEME_ON_ACCENT : THEME_TEXT_2;
+    if (launch >= 0.0f && label[0] == ARROW_RIGHT[0]) {
+        /* The arrow apart from its words: off to the right, fading, over the first half; back in from the left. */
+        const int32_t arrow_w = gfx_text_width(ARROW_RIGHT, 2), left = (int32_t)(bx + bw / 2) - gfx_text_width(label, 2) / 2;
+        const float out = launch < 0.5f ? launch / 0.5f : 0.0f, in = launch < 0.5f ? 0.0f : (launch - 0.5f) / 0.5f;
+        const float dx = launch < 0.5f ? 46.0f * out * out : -22.0f * (1.0f - in) * (1.0f - in);
+        const float seen = launch < 0.5f ? 1.0f - out : in;
+        gfx_text(left + (int32_t)dx, (int32_t)by + 10, 2, (uint32_t)((float)(ink >> 24) * seen) << 24 | (ink & 0x00FFFFFF),
+                 ARROW_RIGHT);
+        gfx_text(left + arrow_w, (int32_t)by + 10, 2, ink, label + strlen(ARROW_RIGHT));
+    } else
+        gfx_text_center((int32_t)(bx + bw / 2), (int32_t)by + 10, 2, ink, label);
     if (launch >= 0.0f) {
         if (launch >= dip)
-            gfx_rect(bx, by, bw, bh, bh / 2, (uint32_t)(90.0f * (1.0f - spring)) << 24 | 0x00FFFFFF);
+            gfx_rect(bx, by, bw, bh, bh / 2, (uint32_t)(55.0f * (1.0f - spring)) << 24 | 0x00FFFFFF);
+        /* The sweep: a soft band of light, left to right, kept to the button's straight middle (its ends are round). */
+        const float sweep = (launch - 0.15f) / 0.6f;
+        if (sweep > 0.0f && sweep < 1.0f) {
+            enum { STRIPS = 9 };
+            const float band = 64.0f, strip = band / STRIPS, from = bx + bh / 2, to = bx + bw - bh / 2;
+            const float centre = from - band / 2 + (to - from + band) * sweep;
+            for (int i = 0; i < STRIPS; i++) {
+                const float sx = centre - band / 2 + strip * (float)i, ex = sx + strip;
+                const float l = sx < from ? from : sx, r = ex > to ? to : ex;
+                if (r <= l)
+                    continue;
+                const float peak = 1.0f - fabsf(((float)i + 0.5f) / STRIPS * 2.0f - 1.0f);   /* 0 at the edges, 1 mid */
+                gfx_rect(l, by, r - l, bh, 0.0f, (uint32_t)(70.0f * peak * peak) << 24 | 0x00FFFFFF);
+            }
+        }
         gfx_scale_end();
     }
     y += (int32_t)bh + (message[0] ? 16 : 36);   /* closer with a message, so its box has room under them */

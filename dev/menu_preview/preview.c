@@ -453,7 +453,9 @@ static float smooth(float edge0, float edge1, float v)
     return t * t * (3.0f - 2.0f * t);
 }
 
-static void fake_game(void)
+/* The game at now seconds: the camera pans slowly right, the nearer hills faster (parallax), stars twinkle, mist drifts
+ * along the valleys. At 0 it's the still picture the screenshots use. */
+static void fake_game_at(float now)
 {
     static const float zenith[3] = { 0.020f, 0.027f, 0.066f }, horizon[3] = { 0.150f, 0.135f, 0.215f };
     static const float glow[3] = { 0.62f, 0.33f, 0.16f }, moon[3] = { 0.96f, 0.93f, 0.84f };
@@ -469,21 +471,25 @@ static void fake_game(void)
             for (int k = 0; k < 3; k++)
                 c[k] = zenith[k] + (horizon[k] - zenith[k]) * down * down + glow[k] * warm;
             /* Stars, fewer and fainter toward the horizon: one in some cells of a grid, placed by a hash. */
-            const int cell_x = x / 26, cell_y = y / 26;
+            const float pan = 9.0f * now;   /* pixels the far sky has moved */
+            const int sky_x = x + (int)pan;
+            const int cell_x = sky_x / 26, cell_y = y / 26;
             uint32_t hash = (uint32_t)cell_x * 374761393u + (uint32_t)cell_y * 668265263u;
             hash = (hash ^ (hash >> 13)) * 1274126177u;
             hash ^= hash >> 16;
             if ((hash & 7) < 3) {
-                const float sx = (float)(cell_x * 26) + 3.0f + (float)((hash >> 8) % 20);
+                const float sx = (float)(cell_x * 26) + 3.0f + (float)((hash >> 8) % 20) - pan;
                 const float sy = (float)(cell_y * 26) + 3.0f + (float)((hash >> 14) % 20);
                 const float d2 = ((float)x - sx) * ((float)x - sx) + ((float)y - sy) * ((float)y - sy);
-                const float bright = (0.25f + 0.75f * (float)((hash >> 20) % 100) / 100.0f) * (1.0f - down);
+                const float twinkle = 0.65f + 0.35f * sinf(now * (1.5f + (float)(hash % 7) * 0.4f) + (float)(hash >> 3));
+                const float bright = (0.25f + 0.75f * (float)((hash >> 20) % 100) / 100.0f) * (1.0f - down) * twinkle;
                 const float star = bright * expf(-d2 / (0.45f + 0.5f * (float)((hash >> 4) & 1)));
                 for (int k = 0; k < 3; k++)
                     c[k] += star * (k == 2 ? 1.0f : 0.92f);
             }
             /* The moon and its halo. */
-            const float md = sqrtf(((float)x - MOON_X) * ((float)x - MOON_X) + ((float)y - MOON_Y) * ((float)y - MOON_Y));
+            const float moon_x = MOON_X - 0.5f * pan;   /* far: it barely moves */
+            const float md = sqrtf(((float)x - moon_x) * ((float)x - moon_x) + ((float)y - MOON_Y) * ((float)y - MOON_Y));
             const float disc = 1.0f - smooth((float)MOON_R - 1.0f, (float)MOON_R + 1.0f, md);
             const float halo = 0.16f * expf(-md / 95.0f) + 0.05f * expf(-md / 320.0f);
             for (int k = 0; k < 3; k++)
@@ -492,13 +498,16 @@ static void fake_game(void)
             for (int layer = 0; layer < LAYERS; layer++) {
                 const float t = (float)layer / (float)(LAYERS - 1);
                 const float top = (float)HORIZON_Y - 26.0f + 62.0f * (float)layer -
-                                  (34.0f + 30.0f * t) * ridge((float)x + 400.0f * (float)layer, layer);
+                                  (34.0f + 30.0f * t) * ridge((float)x + 400.0f * (float)layer + pan * (2.0f + 3.0f * (float)layer), layer);
                 const float cover = smooth(top - 1.0f, top + 1.0f, (float)y);
                 const float depth = smooth(top, top + 220.0f, (float)y);   /* mist thins down the slope */
+                /* Mist drifting along the range's foot, in slow waves. */
+                const float mist = 0.06f * (1.0f - t) * smooth(top + 30.0f, top + 5.0f, (float)y) *
+                                   (0.5f + 0.5f * sinf(((float)x + now * 22.0f * (1.0f + (float)layer)) * 0.011f + (float)layer * 1.9f));
                 for (int k = 0; k < 3; k++) {
                     const float crest = haze[k] + (near[k] - haze[k]) * t + glow[k] * warm * 0.22f * (1.0f - t);
                     const float hill = crest + (near[k] - crest) * depth * (0.45f + 0.55f * t);
-                    c[k] = c[k] * (1.0f - cover) + hill * cover;
+                    c[k] = c[k] * (1.0f - cover) + hill * cover + mist * (k == 2 ? 1.1f : 0.95f);
                 }
             }
             /* Darker toward the corners. */
@@ -509,6 +518,11 @@ static void fake_game(void)
                 fb[y][x][k] = v < 0.0f ? 0.0f : v > 1.0f ? 1.0f : v;
             }
         }
+}
+
+static void fake_game(void)
+{
+    fake_game_at(0.0f);
 }
 
 /* ---- the README's tour (menu_preview <dir> tour) ---- */
@@ -633,7 +647,7 @@ static void tour_connect(const char *dir, int *frame, int *written)
             continue;
         clear();
         if (streaming) {
-            fake_game();
+            fake_game_at((float)(f - CONNECT) / 60.0f);
             gfx_frame_begin(W, H);
             ui_draw_stats(STATS_DETAILED, HUD_TOP_LEFT, HUD_MEDIUM, &hud, &perf, &net, &hist);
             const int left = CONNECT + STREAM - f;
@@ -877,6 +891,156 @@ static void tour_desktop(const char *dir, int *frame, int *written)
     overlay_set_mouse(false);
 }
 
+/* ---- the tour's end: it was all on an Xbox 360 ---- */
+
+static float screen[H][W][3];   /* the menus as drawn this frame, before they're shrunk onto the TV */
+
+/* The menus, drawn as usual, into screen. */
+static void capture_menu(void)
+{
+    InputState in;
+    memset(&in, 0, sizeof in);
+    in.connected[0] = true;
+    gfx_frame_begin(W, H);
+    menu_update(&in);
+    clear();
+    gfx_frame_begin(W, H);
+    menu_draw(W, H);
+    gfx_flush();
+    memcpy(screen, fb, sizeof screen);
+}
+
+/* screen, shrunk into the rectangle (x, y, w, h) of fb, bilinear. */
+static void blit_screen(float x, float y, float w, float h)
+{
+    for (int py = (int)y; py < (int)(y + h + 1.0f) && py < H; py++)
+        for (int px = (int)x; px < (int)(x + w + 1.0f) && px < W; px++) {
+            if (px < 0 || py < 0)
+                continue;
+            const float cover_x = clampf(x + w - (float)px, 0, 1) * clampf((float)px + 1 - x, 0, 1);
+            const float cover_y = clampf(y + h - (float)py, 0, 1) * clampf((float)py + 1 - y, 0, 1);
+            const float cover = cover_x * cover_y;   /* the edges' pixels, partly */
+            if (cover <= 0)
+                continue;
+            const float u = clampf(((float)px + 0.5f - x) / w * W - 0.5f, 0, W - 1.001f);
+            const float v = clampf(((float)py + 0.5f - y) / h * H - 0.5f, 0, H - 1.001f);
+            const int u0 = (int)u, v0 = (int)v;
+            const float fu = u - (float)u0, fv = v - (float)v0;
+            for (int k = 0; k < 3; k++) {
+                const float top = screen[v0][u0][k] * (1 - fu) + screen[v0][u0 + 1][k] * fu;
+                const float bottom = screen[v0 + 1][u0][k] * (1 - fu) + screen[v0 + 1][u0 + 1][k] * fu;
+                fb[py][px][k] = fb[py][px][k] * (1 - cover) + (top * (1 - fv) + bottom * fv) * cover;
+            }
+        }
+}
+
+/* The room: dark, a little lighter where the TV's glow falls, a floor. */
+static void draw_room(float glow)
+{
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) {
+            const float gx = ((float)x - 560.0f) / 520.0f, gy = ((float)y - 330.0f) / 300.0f;
+            const float light = glow * 0.10f * expf(-(gx * gx + gy * gy));
+            const bool floor = y > 566;
+            const float base = floor ? 0.030f + 0.012f * (float)(y - 566) / (H - 566) : 0.050f - 0.02f * (float)y / H;
+            fb[y][x][0] = base + light * 0.75f;
+            fb[y][x][1] = base + light * 0.80f;
+            fb[y][x][2] = base * 1.15f + light;
+        }
+}
+
+/* The console standing up, front face to us: white, darker toward its curved sides, the disc slot, and the power
+ * button's ring of light, its quarters lit by lit (0 to 4, fractions easing each in). Drawn into fb at (x, y). */
+static void draw_console(float x, float y, float alpha, float lit)
+{
+    enum { CW = 118, CH = 340 };
+    gfx_rect(x - 30, y + CH - 6, CW + 60, 16, 8, faded(0x26000000, alpha));   /* its shadow on the floor */
+    gfx_shadow(x, y, CW, CH, 16, 30, faded(0xA0000000, alpha));
+    gfx_rect(x, y, CW, CH, 18, faded(0xFFBDBEC5, alpha));
+    /* The front bulges out between grey sides that curve in: the sides, light to dark, then the white front. */
+    gfx_rect_v(x + 2, y + 2, 26, CH - 4, 16, faded(0xFFD4D5DB, alpha), faded(0xFFA9AAB2, alpha));
+    gfx_rect_v(x + CW - 28, y + 2, 26, CH - 4, 16, faded(0xFFD4D5DB, alpha), faded(0xFFA9AAB2, alpha));
+    gfx_rect(x + 18, y + 3, CW - 36, CH - 6, 14, faded(0xFFE4E4E8, alpha));
+    gfx_rect(x + 21, y + 5, CW - 42, CH - 10, 12, faded(0xFFF6F6F8, alpha));
+    gfx_rect_v(x + 21, y + CH - 80, CW - 42, 75, 12, faded(0x00E0E0E6, alpha), faded(0xFFE0E0E6, alpha));
+    gfx_rect(x + CW / 2.0f - 1.5f, y + 100, 3, 190, 1.5f, faded(0xFFBCBDC4, alpha));   /* the disc slot */
+    gfx_circle(x + CW / 2.0f, y + 84, 4, faded(0xFFCFD0D6, alpha));                   /* eject */
+    for (int v = 0; v < 4; v++)   /* vents low on the sides */
+        for (int side = 0; side < 2; side++)
+            gfx_rect(side ? x + CW - 21 : x + 9, y + CH - 70 + 12 * v, 12, 4, 2, faded(0xFF9C9DA6, alpha));
+    gfx_circle(x + CW / 2.0f, y + 52, 25, faded(0xFFCACBD1, alpha));   /* the button's well */
+    gfx_circle(x + CW / 2.0f, y + 52, 15, faded(0xFFEDEDF0, alpha));
+    gfx_flush();
+    /* The ring, around the button: four quarters, green as they light, glowing out a little. */
+    const float rx = x + CW / 2.0f, ry = y + 52;
+    for (int py = (int)ry - 34; py <= (int)ry + 34; py++)
+        for (int px = (int)rx - 34; px <= (int)rx + 34; px++) {
+            const float dx = (float)px + 0.5f - rx, dy = (float)py + 0.5f - ry, d = sqrtf(dx * dx + dy * dy);
+            float angle = atan2f(dx, -dy);   /* 0 at the top, going clockwise */
+            if (angle < 0)
+                angle += 6.2831853f;
+            const int quarter = (int)(angle / 1.5707963f);
+            const float on = clampf(lit - (float)quarter, 0, 1);
+            const float gap = fminf(fmodf(angle, 1.5707963f), 1.5707963f - fmodf(angle, 1.5707963f)) * d;
+            const float ring = clampf(1.5f - fabsf(d - 19.0f), 0, 1) * clampf(gap - 1.0f, 0, 1);
+            const float halo = 0.35f * expf(-fabsf(d - 19.0f) / 4.0f) * on;
+            const float g = ring * on * alpha, h = halo * alpha;
+            fb[py][px][0] = fb[py][px][0] * (1 - g) + 0.35f * g + 0.10f * h;
+            fb[py][px][1] = fb[py][px][1] * (1 - g) + 1.00f * g + 0.55f * h;
+            fb[py][px][2] = fb[py][px][2] * (1 - g) + 0.30f * g + 0.08f * h;
+            if (ring > 0 && on <= 0) {   /* unlit: a faint grey groove */
+                const float r = ring * 0.25f * alpha;
+                for (int k = 0; k < 3; k++)
+                    fb[py][px][k] = fb[py][px][k] * (1 - r) + 0.55f * r;
+            }
+        }
+}
+
+/* The end: the menus shrink back onto a TV, the console beside it comes into view, and its ring lights up, a quarter
+ * at a time; then all fades into the title the animation starts with. */
+static void tour_outro(const char *dir, int *frame, int *written)
+{
+    enum { ZOOM = 84, CONSOLE_IN = 40, RING = 96, RING_STEP = 8, END = 210, FADE = 26 };
+    const float tv_x = 250, tv_y = 150, tv_w = 576, tv_h = 324;   /* the TV's picture, at the end */
+    char path[512];
+    for (int f = 0; f < END; f++, (*frame)++) {
+        if (*frame % tour_stride) {
+            gfx_frame_begin(W, H);
+            continue;
+        }
+        capture_menu();
+        const float t = ease_in_out((float)f / ZOOM);
+        const float x = tv_x * t, y = tv_y * t, w = W + (tv_w - W) * t, h = H + (tv_h - H) * t;
+        draw_room(t);
+        gfx_frame_begin(W, H);
+        /* The TV around the picture, at the picture's scale: bezel, stand, a dot of light. */
+        const float scale = w / tv_w, bezel = 14 * scale;
+        gfx_rect(x + w / 2 - 90 * scale, y + h + bezel, 180 * scale, 70 * scale, 0, 0xFF141417);   /* the stand's neck */
+        gfx_rect(x + w / 2 - 150 * scale, y + h + bezel + 64 * scale, 300 * scale, 12 * scale, 6 * scale, 0xFF1B1B1F);
+        gfx_rect(x + w / 2 - 190 * scale, y + h + bezel + 70 * scale, 380 * scale, 14 * scale, 7 * scale,
+                 faded(0x26000000, t));   /* the stand's shadow */
+        gfx_shadow(x - bezel, y - bezel, w + 2 * bezel, h + 2 * bezel, 10 * scale, 40 * scale, 0x90000000);
+        gfx_rect(x - bezel, y - bezel, w + 2 * bezel, h + 2 * bezel, 10 * scale, 0xFF0B0B0D);
+        gfx_rect(x - bezel + 1, y - bezel + 1, w + 2 * bezel - 2, h + 2 * bezel - 2, 9 * scale, 0xFF18181C);
+        gfx_circle(x + w / 2, y + h + bezel * 0.5f, 1.6f * scale, 0xFFFF7A1A);
+        gfx_flush();
+        blit_screen(x, y, w, h);
+        /* The console comes into view from the right, standing on the floor beside the TV. */
+        if (f >= CONSOLE_IN) {
+            const float c = ease_in_out((float)(f - CONSOLE_IN) / (ZOOM - CONSOLE_IN + 10));
+            gfx_frame_begin(W, H);
+            draw_console(960 + 220 * (1 - c), 566 - 340 + 40 * (1 - c), c,
+                         f < RING ? 0.0f : (float)(f - RING) / RING_STEP);
+        }
+        gfx_frame_begin(W, H);
+        const int left = END - f;
+        if (left < FADE)
+            gfx_rect(0.0f, 0.0f, W, H, 0.0f, (uint32_t)(255.0f * (1.0f - (float)left / FADE)) << 24 | 0x0E0E10);
+        snprintf(path, sizeof path, "%s/tour-%04d.png", dir, (*written)++);
+        write_png(path);
+    }
+}
+
 int main(int argc, char **argv)
 {
     const char *dir = argc > 1 ? argv[1] : ".";
@@ -898,7 +1062,7 @@ int main(int argc, char **argv)
         /* Intro: the title; the menus' fade at the end leads back into it as the animation loops. */
         tour_card(dir, 110, NULL, NULL, &frame, &written);
         /* Act one: home, the cursor on Start streaming, A; connecting, the PIN, the stream. */
-        static const TourStep open[] = { { 0, 70 }, { INPUT_GAMEPAD_A, 20 } };
+        static const TourStep open[] = { { 0, 70 }, { INPUT_GAMEPAD_A, 28 } };
         tour_menu(dir, open, sizeof open / sizeof open[0], 16, 0, &frame, &written);
         tour_connect(dir, &frame, &written);
         /* Mouse mode, on the PC's desktop. */
@@ -923,9 +1087,11 @@ int main(int argc, char **argv)
             { INPUT_GAMEPAD_DPAD_DOWN, 7 }, { INPUT_GAMEPAD_DPAD_DOWN, 7 }, { INPUT_GAMEPAD_DPAD_DOWN, 7 },
             { INPUT_GAMEPAD_DPAD_DOWN, 7 }, { INPUT_GAMEPAD_DPAD_DOWN, 7 }, { INPUT_GAMEPAD_DPAD_DOWN, 20 },
             { INPUT_GAMEPAD_DPAD_RIGHT, 26 }, { INPUT_GAMEPAD_DPAD_RIGHT, 26 },
-            { INPUT_GAMEPAD_DPAD_RIGHT, 26 }, { INPUT_GAMEPAD_DPAD_RIGHT, 60 },   /* the last beat: held, then out */
+            { INPUT_GAMEPAD_DPAD_RIGHT, 26 }, { INPUT_GAMEPAD_DPAD_RIGHT, 40 },   /* the last beat: held, then the end */
         };
-        tour_menu(dir, menus, sizeof menus / sizeof menus[0], 16, 28, &frame, &written);
+        tour_menu(dir, menus, sizeof menus / sizeof menus[0], 16, 0, &frame, &written);
+        /* The end: all of it was on an Xbox 360. */
+        tour_outro(dir, &frame, &written);
         printf("%d frames\n", written);
         return 0;
     }

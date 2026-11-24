@@ -23,7 +23,7 @@ def main():
     # 60 a second: frames of 17 and 16 ms in turn (a frame's time is whole milliseconds).
     durations = [17 if i % 3 != 2 else 16 for i in range(len(frames))]
     frames[0].save(OUT, save_all=True, append_images=frames[1:], duration=durations, loop=0, quality=QUALITY,
-                   method=6, minimize_size=True, kmin=9, kmax=60)   # half the size, the same quality
+                   method=6)
     print(f"{OUT}: {len(frames)} frames, {os.path.getsize(OUT)} bytes")
 
 
