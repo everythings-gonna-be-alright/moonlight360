@@ -1,15 +1,18 @@
 # 🌙 Moonlight 360
 
+[![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://stand-with-ukraine.pp.ua)
+[![Release](https://img.shields.io/github/v/release/everythings-gonna-be-alright/moonlight360?include_prereleases&label=release)](https://github.com/everythings-gonna-be-alright/moonlight360/releases)
+[![Downloads](https://img.shields.io/github/downloads/everythings-gonna-be-alright/moonlight360/total)](https://github.com/everythings-gonna-be-alright/moonlight360/releases)
+[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue)](LICENSE)
+![Platform: Xbox 360 RGH/JTAG](https://img.shields.io/badge/platform-Xbox%20360%20RGH%2FJTAG-107C10)
+
 **Stream your PC games to an Xbox 360.** 🎮 Yes, the 2005 one. Up to **1080p at 60 fps**.
 
 An unofficial [Moonlight](https://moonlight-stream.org) client for RGH/JTAG consoles. It works with
 [Sunshine](https://github.com/LizardByte/Sunshine) and its forks (Apollo, Vibeshine), and is built with the
 open-source [xsdk](https://github.com/xenosworks/xsdk): no Microsoft XDK involved.
 
-| | |
-|---|---|
-| ![Main menu](docs/screenshots/play.png) | ![Video settings](docs/screenshots/video.png) |
-| ![Pairing](docs/screenshots/pairing.png) | ![Stats HUD](docs/screenshots/stats.png) |
+![A tour of the menus](docs/screenshots/v0.3/tour.webp)
 
 ## ✨ Features
 
@@ -17,6 +20,8 @@ open-source [xsdk](https://github.com/xenosworks/xsdk): no Microsoft XDK involve
 - H.264 video from 360p to 1080p, at 30 or 60 fps. Opus stereo audio. Controllers 1–4 with rumble.
 - A stats HUD: frame rate, latency by stage, ping, packet loss, CPU and GPU load and temperatures. 🥵
 - Low-latency display, and controllers read 500 times a second.
+- Finds your PC on the network, shows app covers, and keeps your recent apps one press away.
+- Wake-on-LAN, reconnect on start, and four colour themes.
 - A menu made for a controller and a TV.
 
 Not supported: HEVC, AV1 and HDR. The console is older than all three.
@@ -33,7 +38,8 @@ Sunshine, Apollo or Vibeshine on the same network.
 3. **Set the PC.** On the *Play* tab, set *Host PC* to the PC's IP address.
 4. **Pair, once.** Pick *Start streaming* and type the 4-digit PIN from the console into the host's web UI
    (`https://localhost:47990` → *PIN*).
-5. **Play.** Hold **Back** for a second to open the stream menu.
+5. **Play.** Hold **Back** for a second to open the stream menu (another button or combination can be set in
+   *Other → Stream menu*).
 
 Settings are saved to `moonlight.ini` next to the `.xex`. If something goes wrong, `moonlight360.log` says why.
 
@@ -61,10 +67,11 @@ The stats HUD shows `CAVLC lean` when it worked. A real six-minute 1080p60 strea
 
 **No spare CPU on the PC?** Keep the hardware encoder: 720p or 1600×900 at 60 fps, or 1080p at 30 with *Fast decode*.
 
-- 🔌 **Ethernet.** Over the console's Wi-Fi a stream can stop receiving until you reboot.
-- 📶 **Bitrate.** 8–10 Mbit/s at 720p, up to 30 at 1080p.
-- 🐢 **Desktop below 60 fps?** Desktop capture only sends a frame when the screen changes. Games run at 60.
-- 🧪 **MPEG-2** (*Network* → *Video codec*): experimental, needs Sunshine with `mpeg2_mode = 2`, untested on a real host.
+> [!WARNING]
+> **Wi-Fi has problems right now.** Over the console's Wi-Fi a stream can stop, and the console then stops
+> receiving anything until it's rebooted. The cause isn't found yet, so there's no fix. Use Ethernet for now.
+
+- 🧪 **MPEG-2** (*Video* → *Video codec*): experimental, needs Sunshine with `mpeg2_mode = 2`, untested on a real host.
 
 Under the hood: FFmpeg on all six hardware threads, vector code patched for the 360's CPU
 (`patches/ffmpeg-xenon-vmx128.patch`), 24 slices a frame shared between threads.

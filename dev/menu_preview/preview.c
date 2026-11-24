@@ -18,6 +18,7 @@
 #include "overlay.h"
 #include "uisound.h"
 #include "discover.h"
+#include "image.h"
 #include "coverart.h"
 #include "logbuf.h"
 #include "xsdk/texture.h"
@@ -290,6 +291,11 @@ uint32_t xsdk_xam_keyboard(uint32_t user, const uint16_t *t, const uint16_t *d, 
 }
 uint32_t xsdk_xam_wait(XAM_OVERLAPPED *o, uint32_t timeout_ms, uint32_t *result) { (void)o, (void)timeout_ms, (void)result; return ERROR_SUCCESS; }
 bool config_save(const char *path, const Config *config) { (void)path, (void)config; return true; }
+const char *menu_combo_name(int combo)
+{
+    static const char *const names[] = { "Back", "Start", "Back + Start", "LB + RB" };
+    return names[combo >= 0 && combo < 4 ? combo : 0];
+}
 void config_remove_recent(Config *c, int i)
 {
     for (int k = i; k < CONFIG_RECENT - 1; k++) {
@@ -299,8 +305,12 @@ void config_remove_recent(Config *c, int i)
     c->recent_name[CONFIG_RECENT - 1][0] = 0;
 }
 
-static const char *const fake_apps[] = { "Desktop", "Steam Big Picture", "Hades II", "Forza Horizon 5",
-                                         "Elden Ring", "Stardew Valley", "Hollow Knight", "Balatro" };
+/* The PC's apps: Sunshine's defaults and some games, with their covers (dev/menu_preview/covers); the last has
+ * none, for the initial in its place. */
+static const char *const fake_apps[] = { "Desktop", "Steam Big Picture", "Red Dead Redemption 2", "Grand Theft Auto V",
+                                         "Cyberpunk 2077", "Elden Ring", "Forza Horizon 5", "Retro Arcade" };
+static const char *const fake_covers[] = { "desktop.png", "steam.png", "rdr2.jpg", "gta5.jpg", "cyberpunk.jpg",
+                                           "eldenring.jpg", "forza5.jpg", NULL };
 static AppsState fake_state = APPS_READY;
 void apps_fetch(const char *host) { (void)host; }
 AppsState apps_state(void) { return fake_state; }
@@ -317,25 +327,26 @@ int apps_id(int i) { return i + 1; }
 const uint8_t *apps_cover(int i);
 const uint8_t *coverart_get(const char *host, int id) { (void)host; return apps_cover(id - 1); }
 unsigned coverart_generation(void) { return 1; }
-/* Stand-in covers: a dark gradient in a hue of its own, a lighter band and a "title" bar; Elden Ring (4) has none,
- * to show the initial instead. */
+/* The covers, read from dev/menu_preview/covers and fitted as apps.c fits the host's. */
 const uint8_t *apps_cover(int i)
 {
-    static uint8_t covers[8][APPS_COVER_W * APPS_COVER_H * 4];
-    static const uint8_t hues[8][3] = { { 40, 90, 200 }, { 30, 60, 110 }, { 200, 60, 40 }, { 230, 120, 30 },
-                                        { 0, 0, 0 },     { 80, 170, 70 }, { 70, 80, 140 }, { 170, 40, 90 } };
-    if (i < 0 || i >= 8 || i == 4)
+    static uint8_t *covers[8];
+    static bool tried[8];
+    if (i < 0 || i >= apps_count() || !fake_covers[i])
         return NULL;
-    uint8_t *c = covers[i];
-    for (int y = 0; y < APPS_COVER_H; y++)
-        for (int x = 0; x < APPS_COVER_W; x++) {
-            const float t = 0.35f + 0.65f * (1.0f - (float)y / APPS_COVER_H);
-            const bool band = (x + y) % 90 < 30, bar = y > 170 && y < 200 && x > 24 && x < 168;
-            for (int k = 0; k < 3; k++)
-                c[(y * APPS_COVER_W + x) * 4 + k] = bar ? 235 : (uint8_t)(hues[i][k] * t * (band ? 1.15f : 0.85f));
-            c[(y * APPS_COVER_W + x) * 4 + 3] = 255;
+    if (!tried[i]) {
+        tried[i] = true;
+        char path[128];
+        snprintf(path, sizeof path, "dev/menu_preview/covers/%s", fake_covers[i]);
+        FILE *f = fopen(path, "rb");
+        if (f) {
+            static uint8_t data[1 << 20];
+            const size_t n = fread(data, 1, sizeof data, f);
+            fclose(f);
+            covers[i] = image_decode_fit(data, n, APPS_COVER_W, APPS_COVER_H);
         }
-    return c;
+    }
+    return covers[i];
 }
 
 /* Sample readings, as the console might show mid-stream. */
@@ -499,10 +510,222 @@ static void fake_game(void)
         }
 }
 
+/* ---- the README's tour (menu_preview <dir> tour) ---- */
+
+/* The game, as the stream would show it: dev/menu_preview/covers/stream.jpg (the landscape if it isn't there). */
+static void game_frame(void)
+{
+    static uint8_t *picture;
+    static bool tried;
+    if (!tried) {
+        tried = true;
+        FILE *f = fopen("dev/menu_preview/covers/stream.jpg", "rb");
+        if (f) {
+            static uint8_t data[1 << 21];
+            const size_t n = fread(data, 1, sizeof data, f);
+            fclose(f);
+            picture = image_decode_fit(data, n, W, H);
+        }
+    }
+    if (!picture) {
+        fake_game();
+        return;
+    }
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++)
+            for (int k = 0; k < 3; k++)
+                fb[y][x][k] = picture[((size_t)y * W + x) * 4 + k] / 255.0f;
+}
+
+/* Every how many of the menus' 60 frames a second one is written: 1, all of them (60 a second); 2, 30 a second. */
+static int tour_stride = 1;
+
+typedef struct {
+    uint16_t button;   /* pressed for one frame */
+    int wait;          /* then this many frames of the menu as it is (60 a second) */
+} TourStep;
+
+/* The menus through steps, every tour_stride-th frame written as tour-NNNN.png; the first fade_in frames rise from the
+ * background (a cut's soft landing). */
+static void tour_menu(const char *dir, const TourStep *steps, size_t count, int fade_in, int fade_out, int *frame,
+                      int *written)
+{
+    char path[512];
+    int local = 0, total = 0;
+    for (size_t i = 0; i < count; i++)
+        total += steps[i].wait + 1;
+    for (size_t i = 0; i < count; i++)
+        for (int f = 0; f <= steps[i].wait; f++, (*frame)++, local++) {
+            InputState in;
+            memset(&in, 0, sizeof in);
+            in.connected[0] = true;
+            in.pressed[0] = f == 0 ? steps[i].button : 0;
+            in.buttons[0] = in.pressed[0];
+            gfx_frame_begin(W, H);
+            menu_update(&in);
+            if (*frame % tour_stride) {
+                menu_draw(W, H);
+                continue;
+            }
+            clear();
+            gfx_frame_begin(W, H);
+            menu_draw(W, H);
+            const int left = total - local;
+            uint32_t alpha = 0;
+            if (local < fade_in)
+                alpha = 255u * (uint32_t)(fade_in - local) / (uint32_t)fade_in;
+            else if (left <= fade_out)
+                alpha = 255u * (uint32_t)(fade_out - left + 1) / (uint32_t)fade_out;
+            if (alpha)
+                gfx_rect(0.0f, 0.0f, W, H, 0.0f, alpha << 24 | 0x0E0E10);
+            snprintf(path, sizeof path, "%s/tour-%04d.png", dir, (*written)++);
+            write_png(path);
+        }
+}
+
+/* A title card for the tour's start and end: the logo easing in and growing a little, the title and the lines under
+ * it, all rising from the background and sinking back into it at the end. frames long; lines may be NULL. */
+static void tour_card(const char *dir, int frames, const char *line1, const char *line2, int *frame, int *written)
+{
+    enum { IN = 26, OUT = 22 };
+    char path[512];
+    for (int f = 0; f < frames; f++, (*frame)++) {
+        gfx_frame_begin(W, H);
+        if (*frame % tour_stride)
+            continue;
+        clear();
+        const float t = f < IN ? (float)f / IN : 1.0f;
+        const float ease = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);   /* out-cubic */
+        const float size = 112.0f * (0.86f + 0.14f * ease), cx = W / 2.0f, top = 214.0f;
+        gfx_logo(cx - size / 2.0f, top + (112.0f - size) / 2.0f, size);
+        const int32_t ty = (int32_t)top + 140;
+        const int32_t tw = gfx_text_width("Moonlight 360", 3), mw = gfx_text_width("Moonlight ", 3);
+        gfx_text((int32_t)cx - tw / 2, ty, 3, 0xFFF4F4F5, "Moonlight");
+        gfx_text((int32_t)cx - tw / 2 + mw, ty, 3, 0xFFFFA45E, "360");
+        if (line1)
+            gfx_text_center((int32_t)cx, ty + 82, 1, 0xFFB3B3B9, line1);
+        if (line2)
+            gfx_text_center((int32_t)cx, ty + 110, 1, 0xFF74747C, line2);
+        /* The fades: the whole card from the background, and back. Text comes a beat after the logo. */
+        const int left = frames - f;
+        float hide = f < IN ? 1.0f - ease : left < OUT ? 1.0f - (float)left / OUT : 0.0f;
+        gfx_rect(0.0f, ty - 10.0f, W, 200.0f, 0.0f,
+                 (uint32_t)(255.0f * (f < IN + 8 ? (f < 8 ? 1.0f : 1.0f - (float)(f - 8) / IN) : hide)) << 24 |
+                     0x0E0E10);
+        gfx_rect(0.0f, 0.0f, W, H, 0.0f, (uint32_t)(255.0f * hide) << 24 | 0x0E0E10);
+        snprintf(path, sizeof path, "%s/tour-%04d.png", dir, (*written)++);
+        write_png(path);
+    }
+}
+
+/* Connecting: Reach PC, the first time's pairing with its PIN, the other steps; then the game with the detailed stats,
+ * their graphs running on. */
+static void tour_connect(const char *dir, int *frame, int *written)
+{
+    static const char *const step_names[] = { "Reach PC", "Pair", "Start app", "Stream", "Picture" };
+    static const char *const details[] = { "Contacting 192.168.1.100...", "Paired.",
+                                           "Starting \"Red Dead Redemption 2\" at 1920x1080 60 fps, 30000 kbps...",
+                                           "RTSP handshake...", "Waiting for the first frame from the PC\xE2\x80\xA6" };
+    static NetStats net = { .rtt_ms = 1, .budget_ms = 1000.0f / 60, .count = NET_HISTORY };
+    for (int k = 0; k < NET_HISTORY; k++)
+        net.interval_ms[k] = 1000.0f / 60 + (float)((k * 37) % 5) - 2.0f;
+    static HudHistory hist = { .latency_count = HUD_HISTORY, .load_count = HUD_HISTORY };
+    const HudStats hud = { .ready = true, .fps = 60, .target_fps = 60, .width = 1920, .height = 1080, .cabac = 0,
+                           .stream_kind = STREAM_LEAN, .host_ms = 4, .net_ms = 4, .decode_ms = 12, .display_ms = 14 };
+    PerfReadings perf;
+    perf_get(&perf);
+    /* Reach PC; the PIN, held; the other steps, quick; the stream, held, fading out at its end. */
+    enum { REACH = 36, PAIRING = 110, STEP = 24, CONNECT = REACH + PAIRING + 4 * STEP, STREAM = 190, FADE = 18 };
+    char path[512];
+    for (int f = 0; f < CONNECT + STREAM; f++, (*frame)++) {
+        gfx_frame_begin(W, H);
+        const bool streaming = f >= CONNECT;
+        if (streaming)
+            for (int k = 0; k < HUD_HISTORY; k++) {
+                const int q = k + f - CONNECT + 40;
+                hist.latency[k][0] = 4.0f;
+                hist.latency[k][1] = 3.0f + (q % 17 == 0 ? 3.0f : 0.0f);
+                hist.latency[k][2] = 8.0f + (float)((q * 29) % 9) * 0.4f;
+                hist.latency[k][3] = 12.0f + (float)((q * 7) % 5);
+                hist.cpu[k] = (uint8_t)(58 + (q * 13) % 11);
+                hist.cpu_peak[k] = (uint8_t)(84 + (q * 5) % 10);
+                hist.gpu[k] = (uint8_t)(14 + (q * 11) % 6);
+            }
+        if (*frame % tour_stride)
+            continue;
+        clear();
+        if (streaming) {
+            game_frame();
+            gfx_frame_begin(W, H);
+            ui_draw_stats(STATS_DETAILED, HUD_TOP_LEFT, HUD_MEDIUM, &hud, &perf, &net, &hist);
+            const int left = CONNECT + STREAM - f;
+            if (left < FADE)   /* out to the background, for the menus to rise from */
+                gfx_rect(0.0f, 0.0f, W, H, 0.0f, (255u * (uint32_t)(FADE - left) / FADE) << 24 | 0x0E0E10);
+        } else if (f >= REACH && f < REACH + PAIRING) {
+            ui_draw_status(W, H, "Pair with your PC",
+                           "Open Sunshine's web UI on the PC, go to the PIN page and enter this code. "
+                           "Name the device Xbox 360. This is needed once.",
+                           "4827", true);
+        } else {
+            const int step = f < REACH ? 0 : 1 + (f - REACH - PAIRING) / STEP;
+            ui_draw_progress(W, H, "Red Dead Redemption 2",
+                             "on 192.168.1.100  \xC2\xB7  1920\xC3\x97" "1080  \xC2\xB7  60 fps  \xC2\xB7  30 Mbps",
+                             step_names, 5, step, details[step]);
+        }
+        snprintf(path, sizeof path, "%s/tour-%04d.png", dir, (*written)++);
+        write_png(path);
+    }
+}
+
 int main(int argc, char **argv)
 {
     const char *dir = argc > 1 ? argv[1] : ".";
     gfx_init();
+    if (argc > 2 && !strcmp(argv[2], "tour")) {
+        /* A walk through the app for the README: tour-NNNN.png, 60 a second, or 30 with "tour 2". */
+        if (argc > 3)
+            tour_stride = atoi(argv[3]) > 0 ? atoi(argv[3]) : 1;
+        static Config c = { .host = "192.168.1.100", .app = "Red Dead Redemption 2", .width = 1920, .height = 1080,
+                            .fps = 60, .bitrate_kbps = 30000, .decode = true, .draw = true, .audio_packet_ms = 20,
+                            .packet_size = 1392, .slices = 24, .app_id = 3, .low_latency = true, .stats_mode = 1,
+                            .ui_sounds = true, .rumble = true, .show_recent = true,
+                            .recent_id = { 3, 5, 4, 7 },
+                            .recent_name = { "Red Dead Redemption 2", "Cyberpunk 2077", "Grand Theft Auto V",
+                                             "Forza Horizon 5" } };
+        menu_open(&c, "moonlight.ini");
+        int frame = 0, written = 0;
+        /* Intro: the title; the menus' fade at the end leads back into it as the animation loops. */
+        tour_card(dir, 110, NULL, NULL, &frame, &written);
+        /* Act one: home, the cursor on Start streaming, A; connecting, the PIN, the stream. */
+        static const TourStep open[] = { { 0, 70 }, { INPUT_GAMEPAD_A, 20 } };
+        tour_menu(dir, open, sizeof open / sizeof open[0], 16, 0, &frame, &written);
+        tour_connect(dir, &frame, &written);
+        /* Act two: the menus, one idea a beat, back home to where it started: it loops. */
+        static const TourStep menus[] = {
+            { 0, 44 },                                                            /* Play: the moon */
+            { INPUT_GAMEPAD_DPAD_RIGHT, 22 }, { INPUT_GAMEPAD_DPAD_RIGHT, 16 },   /* Recent */
+            { INPUT_GAMEPAD_DPAD_RIGHT, 16 }, { INPUT_GAMEPAD_B, 16 },
+            { INPUT_GAMEPAD_DPAD_DOWN, 12 }, { INPUT_GAMEPAD_A, 40 },             /* the covers */
+            { INPUT_GAMEPAD_DPAD_RIGHT, 14 }, { INPUT_GAMEPAD_DPAD_RIGHT, 14 },
+            { INPUT_GAMEPAD_DPAD_LEFT, 14 }, { INPUT_GAMEPAD_DPAD_LEFT, 18 },
+            { INPUT_GAMEPAD_B, 16 },
+            { INPUT_GAMEPAD_RIGHT_SHOULDER, 26 },                                 /* Video: up to 30 Mbps */
+            { INPUT_GAMEPAD_DPAD_DOWN, 12 }, { INPUT_GAMEPAD_DPAD_DOWN, 12 },
+            { INPUT_GAMEPAD_DPAD_LEFT, 12 }, { INPUT_GAMEPAD_DPAD_LEFT, 16 },
+            { INPUT_GAMEPAD_DPAD_RIGHT, 12 }, { INPUT_GAMEPAD_DPAD_RIGHT, 32 },
+            { INPUT_GAMEPAD_RIGHT_SHOULDER, 4 }, { INPUT_GAMEPAD_RIGHT_SHOULDER, 20 },   /* Other: the themes */
+            { INPUT_GAMEPAD_DPAD_DOWN, 7 }, { INPUT_GAMEPAD_DPAD_DOWN, 7 }, { INPUT_GAMEPAD_DPAD_DOWN, 7 },
+            { INPUT_GAMEPAD_DPAD_DOWN, 7 }, { INPUT_GAMEPAD_DPAD_DOWN, 7 }, { INPUT_GAMEPAD_DPAD_DOWN, 20 },
+            { INPUT_GAMEPAD_DPAD_RIGHT, 26 }, { INPUT_GAMEPAD_DPAD_RIGHT, 26 },
+            { INPUT_GAMEPAD_DPAD_RIGHT, 26 }, { INPUT_GAMEPAD_DPAD_RIGHT, 30 },
+            { INPUT_GAMEPAD_LEFT_SHOULDER, 4 }, { INPUT_GAMEPAD_LEFT_SHOULDER, 4 },     /* home */
+            { INPUT_GAMEPAD_LEFT_SHOULDER, 28 },
+            { INPUT_GAMEPAD_DPAD_UP, 30 },                                        /* on Start streaming again */
+        };
+        tour_menu(dir, menus, sizeof menus / sizeof menus[0], 16, 20, &frame, &written);
+        printf("%d frames\n", written);
+        return 0;
+    }
     if (argc > 3 && !strcmp(argv[2], "moon")) {
         /* The Play tab's sky over time: every third frame (20 a second) of argv[3] seconds, as moon-NNNN.png. */
         static Config sky = { .host = "192.168.1.100", .app = "Desktop", .width = 1280, .height = 720, .fps = 30,
@@ -525,9 +748,10 @@ int main(int argc, char **argv)
     static Config config = { .host = "192.168.1.100", .app = "Desktop", .width = 1920, .height = 1080, .fps = 60,
                              .bitrate_kbps = 20000, .fast_decode = false, .decode = true, .draw = true,
                              .audio_packet_ms = 20, .packet_size = 1392, .slices = 24, .app_id = 3,
-                             .recent_id = { 3, 4, 1, 6 }, .show_recent = true,
-                             .recent_name = { "Hades II", "Forza Horizon 5", "Desktop", "Stardew Valley" } };
-    snprintf(config.app, sizeof config.app, "Hades II");
+                             .recent_id = { 3, 5, 4, 7 }, .show_recent = true,
+                             .recent_name = { "Red Dead Redemption 2", "Cyberpunk 2077", "Grand Theft Auto V",
+                                              "Forza Horizon 5" } };
+    snprintf(config.app, sizeof config.app, "Red Dead Redemption 2");
     menu_open(&config, "moonlight.ini");
     shot_menu(dir, "1-play");
     press(INPUT_GAMEPAD_DPAD_DOWN);
@@ -620,9 +844,7 @@ int main(int argc, char **argv)
     press(INPUT_GAMEPAD_B);
     press(INPUT_GAMEPAD_DPAD_UP);          /* App again */
     press(INPUT_GAMEPAD_A);                /* the picker */
-    press(INPUT_GAMEPAD_DPAD_RIGHT);
-    press(INPUT_GAMEPAD_DPAD_RIGHT);
-    for (int i = 0; i < 12; i++) {   /* covers made, the row settled */
+    for (int i = 0; i < 12; i++) {   /* covers made, the row settled: on the current app */
         gfx_frame_begin(W, H);
         menu_draw(W, H);
     }
