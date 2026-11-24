@@ -655,6 +655,228 @@ static void tour_connect(const char *dir, int *frame, int *written)
     }
 }
 
+/* ---- the tour's desktop: mouse mode ---- */
+
+/* The desktop's wallpaper, made once: deep blue into violet, with a warm glow and a cool one. */
+static float wallpaper[H][W][3];
+
+static void make_wallpaper(void)
+{
+    static const float top_left[3] = { 0.07f, 0.11f, 0.24f }, bottom_right[3] = { 0.20f, 0.08f, 0.26f };
+    static const float warm[3] = { 0.85f, 0.38f, 0.30f }, cool[3] = { 0.16f, 0.62f, 0.66f };
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) {
+            const float u = ((float)x / W + (float)y / H) / 2.0f;
+            const float wx = ((float)x - 930.0f) / 360.0f, wy = ((float)y - 210.0f) / 240.0f;
+            const float cx = ((float)x - 330.0f) / 420.0f, cy = ((float)y - 600.0f) / 260.0f;
+            const float w = 0.42f * expf(-(wx * wx + wy * wy)), c = 0.30f * expf(-(cx * cx + cy * cy));
+            for (int k = 0; k < 3; k++)
+                wallpaper[y][x][k] = top_left[k] + (bottom_right[k] - top_left[k]) * u + warm[k] * w + cool[k] * c;
+        }
+}
+
+/* An arrow pointer with its tip at (x, y), white edged in black, straight into the picture. */
+static void draw_pointer(float x, float y)
+{
+    static const float arrow[][2] = { { 0, 0 }, { 0, 17 }, { 4.2f, 13.2f }, { 7.2f, 19.6f }, { 9.6f, 18.5f },
+                                       { 6.6f, 12.2f }, { 12.2f, 12.2f } };
+    enum { POINTS = sizeof arrow / sizeof arrow[0] };
+    const float size = 1.35f;
+    for (int py = (int)y - 3; py < (int)y + 32; py++)
+        for (int px = (int)x - 3; px < (int)x + 22; px++) {
+            if (px < 0 || py < 0 || px >= W || py >= H)
+                continue;
+            float fill = 0.0f, edge = 0.0f;   /* 4x4 samples a pixel: inside the arrow, and within 1.4 px of it */
+            for (int sy = 0; sy < 4; sy++)
+                for (int sx = 0; sx < 4; sx++) {
+                    const float qx = ((float)px + (sx + 0.5f) / 4.0f - x) / size, qy = ((float)py + (sy + 0.5f) / 4.0f - y) / size;
+                    bool in = false, near = false;
+                    for (int i = 0, j = POINTS - 1; i < POINTS; j = i++) {
+                        const float *a = arrow[i], *b = arrow[j];
+                        if ((a[1] > qy) != (b[1] > qy) && qx < (b[0] - a[0]) * (qy - a[1]) / (b[1] - a[1]) + a[0])
+                            in = !in;
+                        const float ex = b[0] - a[0], ey = b[1] - a[1];
+                        float t = ((qx - a[0]) * ex + (qy - a[1]) * ey) / (ex * ex + ey * ey);
+                        t = t < 0 ? 0 : t > 1 ? 1 : t;
+                        const float dx = qx - a[0] - t * ex, dy = qy - a[1] - t * ey;
+                        if (dx * dx + dy * dy < 1.0f / (size * size))
+                            near = true;
+                    }
+                    fill += in && !near ? 1.0f / 16 : 0.0f;
+                    edge += in || near ? 1.0f / 16 : 0.0f;
+                }
+            for (int k = 0; k < 3; k++) {
+                const float under = fb[py][px][k] * (1.0f - edge) + 0.04f * edge;   /* the black edge */
+                fb[py][px][k] = under * (1.0f - fill) + 0.98f * fill;
+            }
+        }
+}
+
+/* argb with its alpha times a. */
+static uint32_t faded(uint32_t argb, float a)
+{
+    return (uint32_t)((float)(argb >> 24) * clampf(a, 0, 1) + 0.5f) << 24 | (argb & 0x00FFFFFF);
+}
+
+/* Text at 80%, centred on cx. */
+static void small_text_center(float cx, float y, uint32_t argb, const char *text)
+{
+    gfx_scale_begin(0.8f, cx, y);
+    gfx_text_center((int32_t)cx, (int32_t)y, 1, argb, text);
+    gfx_scale_end();
+}
+
+enum { ICON_X = 34, ICON_Y = 30, ICON_STEP = 104, TASKBAR_H = 52 };
+
+/* A desktop icon: a folder, or a tile with a mark on it; its name under it. */
+static void desktop_icon(int i, bool selected)
+{
+    static const char *const names[] = { "Games", "Photos", "Notes" };
+    const float x = ICON_X, y = (float)(ICON_Y + i * ICON_STEP);
+    if (selected)
+        gfx_rect(x - 14, y - 10, 92, 98, 10, 0x40FFFFFF);
+    if (i == 0) {
+        gfx_rect(x, y + 2, 28, 14, 4, 0xFFC98A1F);    /* the folder's tab */
+        gfx_rect(x, y + 8, 64, 46, 7, 0xFFF2B33D);
+        gfx_rect(x, y + 18, 64, 36, 7, 0xFFF7C45A);
+    } else {
+        gfx_rect(x + 6, y + 2, 52, 52, 12, i == 1 ? 0xFF2FAF98 : 0xFF5B6CF0);
+        if (i == 1) {
+            gfx_circle(x + 22, y + 20, 6, 0xFFFFF2C2);
+            gfx_rect(x + 14, y + 34, 36, 10, 4, 0xFF1D7E6D);
+        } else
+            for (int l = 0; l < 3; l++)
+                gfx_rect(x + 18, y + 16 + 10 * l, l == 2 ? 18 : 28, 4, 2, 0xFFE8EBFF);
+    }
+    small_text_center(x + 32, y + 64, 0xFFF4F4F5, names[i]);
+}
+
+/* The window the Games folder opens, grown to share of its size (0 to 1), as faint as alpha; hover, a cover the
+ * pointer is on (-1 none). */
+static void games_window(float share, float alpha, int hover)
+{
+    static GfxImage *covers[4];
+    static const int apps[4] = { 2, 3, 4, 5 };   /* fake_apps: the games with covers */
+    for (int i = 0; i < 4; i++)
+        if (!covers[i] && apps_cover(apps[i]))
+            covers[i] = gfx_image_create_rounded(apps_cover(apps[i]), APPS_COVER_W, APPS_COVER_H, 12.0f);
+    enum { WX = 330, WY = 110, WW = 640, WH = 300 };
+    gfx_scale_begin(0.9f + 0.1f * share, WX + WW / 2.0f, WY + WH / 2.0f);
+    gfx_shadow(WX, WY, WW, WH, 12, 28, faded(0x90000000, alpha));
+    gfx_rect(WX, WY, WW, WH, 12, faded(0xFF34343C, alpha));
+    gfx_rect(WX + 1, WY + 1, WW - 2, WH - 2, 11, faded(0xFF1C1C22, alpha));
+    gfx_rect(WX + 1, WY + 1, WW - 2, 46, 11, faded(0xFF26262D, alpha));
+    gfx_rect(WX + 1, WY + 30, WW - 2, 17, 0, faded(0xFF26262D, alpha));
+    gfx_rect(WX + 20, WY + 15, 22, 11, 3, faded(0xFFF2B33D, alpha));   /* a little folder by the name */
+    gfx_text(WX + 54, WY + 12, 1, faded(0xFFF4F4F5, alpha), "Games");
+    for (int k = 0; k < 3; k++)   /* minimise, maximise, close */
+        gfx_rect(WX + WW - 112 + 36 * k, WY + 22, 16, k == 0 ? 2 : 12, k == 0 ? 1 : 3,
+                 faded(k == 2 ? 0xFFE0645A : 0xFF8A8A94, alpha));
+    for (int i = 0; i < 4; i++) {
+        const float cx = WX + 34 + 146.0f * (float)i, cy = WY + 76;
+        if (i == hover)
+            gfx_rect(cx - 8, cy - 8, 136, 222, 12, faded(0xFF3A3A44, alpha));
+        if (covers[i])
+            gfx_image(covers[i], cx, cy, 120, 160, faded(0xFFFFFFFF, alpha));
+        char name[40];
+        gfx_fit_width(name, sizeof name, fake_apps[apps[i]], 1, 150);
+        small_text_center(cx + 60, cy + 174, faded(i == hover ? 0xFFF4F4F5 : 0xFFB3B3B9, alpha), name);
+    }
+    gfx_scale_end();
+}
+
+/* The taskbar: a few app tiles in the middle, the Games window's marked while open, a clock on the right. */
+static void taskbar(bool games_open)
+{
+    gfx_rect(0, H - TASKBAR_H, W, TASKBAR_H, 0, 0xE0121217);
+    static const uint32_t tiles[] = { 0xFF5B6CF0, 0xFFF2B33D, 0xFF2FAF98, 0xFFE0569B, 0xFF8A8A94 };
+    const float left = W / 2.0f - 2.5f * 48.0f;
+    for (int i = 0; i < 5; i++) {
+        const float x = left + 48.0f * (float)i + 6;
+        gfx_rect(x, H - TASKBAR_H + 9, 34, 34, 9, tiles[i]);
+        if (i == 1 && games_open)
+            gfx_rect(x + 11, H - 7, 12, 3, 1.5f, 0xFFFFA45E);
+    }
+    gfx_scale_begin(0.8f, W - 30, H - TASKBAR_H / 2.0f);
+    gfx_text_right(W - 30, H - TASKBAR_H / 2 - 10, 1, 0xFFE4E4E7, "21:47");
+    gfx_scale_end();
+}
+
+static float ease_in_out(float t)
+{
+    t = clampf(t, 0, 1);
+    return t < 0.5f ? 4 * t * t * t : 1 - (-2 * t + 2) * (-2 * t + 2) * (-2 * t + 2) / 2;
+}
+
+/* Mouse mode, on a stream of the PC's desktop: the stream menu, Mouse and keys, Mouse mode on; then the pointer
+ * crosses to the Games folder, opens it with a double click, and rests on a game. */
+static void tour_desktop(const char *dir, int *frame, int *written)
+{
+    /* When each thing happens, in frames from the start. */
+    enum { FADE = 18, MENU = 40, DOWN = 74, PAGE = 102, MOUSE = 146, GO = 172, ARRIVE = 222, CLICK1 = 230,
+           CLICK2 = 240, OPENED = 256, GO2 = 286, ARRIVE2 = 330, END = 392 };
+    make_wallpaper();
+    overlay_set_menu_combo(INPUT_GAMEPAD_BACK, "Back");
+    int stats_mode = 0;
+    const float rest_x = 760, rest_y = 380, icon_x = ICON_X + 30, icon_y = ICON_Y + 26;
+    const float cover_x = 330 + 34 + 146.0f * 2 + 64, cover_y = 110 + 76 + 92;
+    char path[512];
+    for (int f = 0; f < END; f++, (*frame)++) {
+        InputState in;
+        memset(&in, 0, sizeof in);
+        in.connected[0] = true;
+        in.pressed[0] = f == DOWN ? INPUT_GAMEPAD_DPAD_DOWN : f == PAGE || f == MOUSE ? INPUT_GAMEPAD_A : 0;
+        in.buttons[0] = in.pressed[0];
+        gfx_frame_begin(W, H);
+        if (f == MENU)
+            overlay_open();
+        overlay_update(&in, &stats_mode);
+        if (*frame % tour_stride)
+            continue;
+        /* The pointer: resting; to the folder; still while it's opened; on to a game. */
+        float px = rest_x, py = rest_y;
+        if (f >= GO) {
+            const float t = ease_in_out((float)(f - GO) / (ARRIVE - GO));
+            px = rest_x + (icon_x - rest_x) * t;
+            py = rest_y + (icon_y - rest_y) * t - 40.0f * sinf(t * 3.14159f);   /* a slight arc, as a hand moves */
+        }
+        if (f >= GO2) {
+            const float t = ease_in_out((float)(f - GO2) / (ARRIVE2 - GO2));
+            px = icon_x + (cover_x - icon_x) * t;
+            py = icon_y + (cover_y - icon_y) * t - 30.0f * sinf(t * 3.14159f);
+        }
+        memcpy(fb, wallpaper, sizeof fb);
+        gfx_frame_begin(W, H);
+        for (int i = 0; i < 3; i++)
+            desktop_icon(i, i == 0 && f >= CLICK1);
+        if (f >= CLICK2) {
+            const float t = clampf((float)(f - CLICK2) / (OPENED - CLICK2), 0, 1);
+            const float grow = 1 - (1 - t) * (1 - t) * (1 - t);
+            games_window(grow, t * 1.6f, f >= ARRIVE2 - 6 ? 2 : -1);
+        }
+        taskbar(f >= CLICK2);
+        /* Each click: a ring spreading from the pointer. */
+        for (int c = 0; c < 2; c++) {
+            const int at = c ? CLICK2 : CLICK1;
+            if (f >= at && f < at + 14) {
+                const float t = (float)(f - at) / 14.0f;
+                gfx_circle(px, py, 6 + 16 * t, faded(0x60FFFFFF, 1 - t));
+            }
+        }
+        gfx_flush();
+        if (f < MENU || f >= MOUSE)
+            draw_pointer(px, py);
+        overlay_draw(W, H, "Desktop", stats_mode);
+        const int left = END - f;
+        const float hide = f < FADE ? 1.0f - (float)f / FADE : left < FADE ? 1.0f - (float)left / FADE : 0.0f;
+        if (hide > 0)
+            gfx_rect(0.0f, 0.0f, W, H, 0.0f, (uint32_t)(255.0f * hide) << 24 | 0x0E0E10);
+        snprintf(path, sizeof path, "%s/tour-%04d.png", dir, (*written)++);
+        write_png(path);
+    }
+    overlay_set_mouse(false);
+}
+
 int main(int argc, char **argv)
 {
     const char *dir = argc > 1 ? argv[1] : ".";
@@ -679,6 +901,8 @@ int main(int argc, char **argv)
         static const TourStep open[] = { { 0, 70 }, { INPUT_GAMEPAD_A, 20 } };
         tour_menu(dir, open, sizeof open / sizeof open[0], 16, 0, &frame, &written);
         tour_connect(dir, &frame, &written);
+        /* Mouse mode, on the PC's desktop. */
+        tour_desktop(dir, &frame, &written);
         /* Act two: the features, one a beat, building to the themes' colour; it ends there, fading into the title as
          * the animation loops. */
         static const TourStep menus[] = {

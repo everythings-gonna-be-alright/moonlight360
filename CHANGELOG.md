@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.3.2
+
+- **1080p picture, automatic:** 1920×1080 on a 1080p TV, 720p on any other. The setting is gone.
+- **Night sky:** nine rare events on the Play tab: birds, a comet, a meteor shower, a blood moon, a UFO, fireflies, a constellation, a plane, an aurora.
+- Fixed: after a stream, every sky event started at once.
+
+## v0.3.1
+
+- **True 1080p picture** on a 1080p TV, not 720p scaled up.
+- **Mouse and keyboard from the controller:** mouse mode, on-screen keyboard typing, Esc, Alt + Tab and other keys (stream menu: **X** mouse, **Y** type).
+- **Start streaming** answers the press with a short animation.
+
 ## v0.3.0
 
 - **New look:** Ubuntu Sans font, smooth Material icons, animated moon, motion, optional menu sounds.
