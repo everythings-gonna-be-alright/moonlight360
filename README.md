@@ -23,7 +23,6 @@ open-source [xsdk](https://github.com/xenosworks/xsdk): no Microsoft XDK involve
 - 🖱️ **Mouse and keyboard** from the controller, for the PC's desktop and launchers.
 - 🔎 **Finds your PC** on the network, wakes it (Wake-on-LAN), shows game covers and your recent games.
 - 📊 **Stats HUD:** frame rate, latency, packet loss, CPU and GPU load.
-- 🎮 **Made for a TV and a controller,** in two looks: Fresh and Classic.
 
 Not supported: HEVC, AV1 and HDR. The console is older than all three.
 
