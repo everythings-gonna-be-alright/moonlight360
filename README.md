@@ -45,12 +45,10 @@ Settings are saved to `moonlight.ini` next to the `.xex`. If something goes wron
 
 ## ⚡ Best settings and performance
 
-> [!WARNING]
-> **Use a network cable.** Over the console's Wi-Fi a stream can still freeze after a few minutes, and the console
-> then receives nothing until it's rebooted. The two known triggers are avoided on Wi-Fi (no rumble to the
-> controllers, 20 ms audio packets), yet a stream with both still froze after 5½ minutes, so the cause isn't fully
-> found. On a cable it's solid: 1080p at 60 fps and 50 Mbit/s ran 13½ minutes with nothing lost. If Wi-Fi is the
-> only option, keep the bitrate at 25 Mbit/s or less, about what the console's Wi-Fi carries.
+> [!NOTE]
+> **A network cable is best.** Over the console's Wi-Fi the stream no longer freezes in normal play, but in rare
+> cases it still can: the console then receives nothing until it's rebooted. On a cable it's solid. On Wi-Fi keep
+> the bitrate at 25 Mbit/s or less, about what the console's Wi-Fi carries.
 
 ### Recommended for 1080p: MPEG-2 🏆
 
