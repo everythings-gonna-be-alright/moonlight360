@@ -63,24 +63,12 @@ console to decode than H.264, so nothing has to be left out to keep up.
 
 ### With H.264: a lean stream 🪶
 
-**1080p · 60 fps · 30 Mbit/s, with a lean stream,** for a host without MPEG-2.
+For a host without MPEG-2: **1080p · 60 fps · 30 Mbit/s.** The PC's processor encodes a stream that is half the
+console's decoding work. Measured: 59 fps, 40 ms from PC to screen.
 
-- **Measured:** a six-minute stream averaged 59 fps, with 40 ms from the PC to the screen.
-- **Trade-off:** the PC's processor does the encoding, and the picture is a little blockier.
-
-### Lean stream setup
-
-A lean stream leaves out the deblocking filter and sub-pixel motion: half of the console's decoding work.
-
-**On the PC** (the host's web UI):
-
-1. *Force a Specific Encoder* → **Software**
-2. *Software Encoder* → *SW Presets* → **ultrafast**
-
-**On the console:**
-
-3. **1920×1080**, **60 fps**, *Skip deblocking* off.
-4. Start a new stream. The stats HUD shows `CAVLC lean` when it worked.
+- **On the PC** (the host's web UI): *Force a Specific Encoder* → **Software**, *SW Presets* → **ultrafast**.
+- **On the console:** 1920×1080, 60 fps, *Skip deblocking* off. The stats HUD shows `CAVLC lean` when it works.
+- **The cost of the speed:** the picture is a little blockier, and fast motion can turn noisy.
 
 ### No spare CPU on the PC?
 
@@ -137,3 +125,13 @@ FFmpeg, Opus, mbedTLS, curl and expat. [Free60](https://free60.org) documented t
 
 GPLv3 (see [LICENSE](LICENSE)); the submodules keep their own licenses. Not affiliated with Microsoft or Moonlight.
 Xbox 360 is a trademark of Microsoft.
+
+## 💙💛 A note from Ukraine
+
+My country is fighting for its right to exist, and it needs help. If you like this project, please consider
+supporting its defense:
+
+- [Come Back Alive](https://savelife.in.ua/en/donate-en/), a foundation helping its defenders since 2014
+- [UNITED24](https://u24.gov.ua/), the official fundraising platform
+
+Thank you.
