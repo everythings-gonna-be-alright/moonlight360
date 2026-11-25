@@ -17,3 +17,4 @@
 	clip mpeg2_26, CLIP_MPEG2_26
 	clip mid12s24, CLIP_MID12S24
 	clip mid22s24, CLIP_MID22S24
+	clip mpeg2_5, CLIP_MPEG2_5

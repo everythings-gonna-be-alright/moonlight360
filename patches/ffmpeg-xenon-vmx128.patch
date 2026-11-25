@@ -258,7 +258,7 @@ index 75e5fb7..12b5613 100644
                              mb += 16 << pixel_shift;
                          }
 diff --git a/libavcodec/h264_mb.c b/libavcodec/h264_mb.c
-index 2db0670..2ba376c 100644
+index 2db0670..93244b0 100644
 --- a/libavcodec/h264_mb.c
 +++ b/libavcodec/h264_mb.c
 @@ -217,6 +217,8 @@ static av_always_inline void mc_dir_part(const H264Context *h, H264SliceContext
@@ -423,7 +423,7 @@ index 2db0670..2ba376c 100644
  #include "h264_mb_template.c"
  
  #undef  BITS
-@@ -797,7 +888,97 @@ static av_always_inline void hl_decode_mb_idct_luma(const H264Context *h, H264Sl
+@@ -797,7 +888,101 @@ static av_always_inline void hl_decode_mb_idct_luma(const H264Context *h, H264Sl
  #define SIMPLE 0
  #include "h264_mb_template.c"
  
@@ -492,7 +492,11 @@ index 2db0670..2ba376c 100644
 + * on the console, 2026-11-25 (decbench tune, 1080p, 24 slices, ms a frame without and with): lean stream 12.4 and
 + * 10.7 at 11.5 Mbit/s, 17.0 and 14.6 at 22.6; x264 superfast without deblocking 14.3 and 12.7, 19.1 and 16.7; a
 + * stream with deblocking 23.1 and 21.9. */
-+int ff_xenon_tune = 8 | 32 | 64 | 128 | 768;
++/* MPEG-2's three (1024 | 2048 | 4096, h264dec.h): on the console, 2026-11-25 06:29, 1080p in 6 threads, ms a frame
++ * without and with: 7.6 and 5.5 at 5.6 Mbit/s (30 fps clips: the bits a frame of twice that at 60), 10.1 and 7.2
++ * at 13.4, 15.1 and 10.0 at 25.9. A block's transform alone, in the cache: 2,500 to 5,000 cycles in C, 1,100 to
++ * 1,700 in vector floats, about 420 by the shortcut. */
++int ff_xenon_tune = 8 | 32 | 64 | 128 | 768 | 1024 | 2048 | 4096;
 +uint64_t ff_xenon_prof_slice[64][XPROF_SLICE_N] __attribute__((aligned(128)));
 +uint64_t ff_xenon_prof_main[XPROF_MAIN_N];
 +uint64_t ff_xenon_prof_execute_start;
@@ -738,7 +742,7 @@ index 0154fe1..bd7f5cc 100644
      const uint8_t *buf = avpkt->data;
      int buf_size       = avpkt->size;
 diff --git a/libavcodec/h264dec.h b/libavcodec/h264dec.h
-index ccd7583..a0f3b9b 100644
+index ccd7583..d9b2e6d 100644
 --- a/libavcodec/h264dec.h
 +++ b/libavcodec/h264dec.h
 @@ -58,7 +58,8 @@
@@ -751,7 +755,7 @@ index ccd7583..a0f3b9b 100644
  
  #ifdef ALLOW_INTERLACE
  #define MB_MBAFF(h)    (h)->mb_mbaff
-@@ -608,6 +609,51 @@ int ff_h264_decode_ref_pic_marking(H264SliceContext *sl, GetBitContext *gb,
+@@ -608,6 +609,54 @@ int ff_h264_decode_ref_pic_marking(H264SliceContext *sl, GetBitContext *gb,
                                     const H2645NAL *nal, void *logctx);
  
  void ff_h264_hl_decode_mb(const H264Context *h, H264SliceContext *sl);
@@ -787,6 +791,9 @@ index ccd7583..a0f3b9b 100644
 + * 128: both pictures are prefetched a few lines a macroblock (ff_xenon_touch_*, h264_mb.c) in place of FFmpeg's
 + * prefetching and the whole-pixel path's; with it, 256: the written picture's lines are asked for before the
 + * macroblock is parsed, the read picture's after; 512: the written picture's only; 768: the read picture's only.
++ * MPEG-2's, each read when a decoder opens or a block is decoded: 1024: its block copies in vector code
++ * (ppc/hpeldsp_altivec.c); 2048: a block of one coefficient goes to its pixels without the transform (xm_dc_add,
++ * xm_dc_put, ppc/mpeg_xenon_vmx.h); 4096: the transform in vector floats (xm_idct, same file).
 + * Tried and taken out again (2026-11-25): claiming the written picture's cache lines zeroed (dcbz128) before a slice
 + * fills them, so they aren't read from memory first. Exact, and no faster. */
 +void ff_xenon_touch_written(const H264Context *h, const H264SliceContext *sl);
@@ -803,6 +810,57 @@ index ccd7583..a0f3b9b 100644
  void ff_h264_decode_init_vlc(void);
  
  /**
+diff --git a/libavcodec/mpeg12dec.c b/libavcodec/mpeg12dec.c
+index 4f78461..e572b9c 100644
+--- a/libavcodec/mpeg12dec.c
++++ b/libavcodec/mpeg12dec.c
+@@ -53,6 +53,7 @@
+ #include "mpeg12data.h"
+ #include "mpeg12dec.h"
+ #include "mpegutils.h"
++#include "xenon_mpeg.h"
+ #include "mpegvideo.h"
+ #include "mpegvideodata.h"
+ #include "mpegvideodec.h"
+@@ -1387,8 +1388,23 @@ static int mpeg_field_start(Mpeg1Context *s1, const uint8_t *buf, int buf_size)
+  * @return DECODE_SLICE_ERROR if the slice is damaged,
+  *         DECODE_SLICE_OK if this slice is OK
+  */
++static int mpeg_decode_slice_untimed(MpegEncContext *s, int mb_y,
++                                     const uint8_t **buf, int buf_size);
++
++/* moonlight-xbox360: xenon_mpeg.h */
+ static int mpeg_decode_slice(MpegEncContext *s, int mb_y,
+                              const uint8_t **buf, int buf_size)
++{
++    if (!ff_xenon_prof)
++        return mpeg_decode_slice_untimed(s, mb_y, buf, buf_size);
++    const uint64_t t0 = ff_xenon_mpeg_ticks();
++    const int ret = mpeg_decode_slice_untimed(s, mb_y, buf, buf_size);
++    ff_xenon_mpeg_prof[s->start_mb_y & (XMPROF_ROWS - 1)][XMPROF_TOTAL] += ff_xenon_mpeg_ticks() - t0;
++    return ret;
++}
++
++static int mpeg_decode_slice_untimed(MpegEncContext *s, int mb_y,
++                                     const uint8_t **buf, int buf_size)
+ {
+     AVCodecContext *avctx = s->avctx;
+     const int lowres      = s->avctx->lowres;
+@@ -1489,7 +1505,13 @@ static int mpeg_decode_slice(MpegEncContext *s, int mb_y,
+     }
+ 
+     for (;;) {
+-        if ((ret = mpeg_decode_mb(s, s->block)) < 0)
++        if (ff_xenon_prof) {   /* moonlight-xbox360: xenon_mpeg.h */
++            const uint64_t t0 = ff_xenon_mpeg_ticks();
++            ret = mpeg_decode_mb(s, s->block);
++            ff_xenon_mpeg_prof[s->start_mb_y & (XMPROF_ROWS - 1)][XMPROF_PARSE] += ff_xenon_mpeg_ticks() - t0;
++        } else
++            ret = mpeg_decode_mb(s, s->block);
++        if (ret < 0)
+             return ret;
+ 
+         // Note motion_val is normally NULL unless we want to extract the MVs.
 diff --git a/libavcodec/mpegvideo.c b/libavcodec/mpegvideo.c
 index 01e310e..b055573 100644
 --- a/libavcodec/mpegvideo.c
@@ -819,6 +877,136 @@ index 01e310e..b055573 100644
  
      if (s->avctx->pix_fmt == AV_PIX_FMT_NONE) {
          av_log(s->avctx, AV_LOG_ERROR,
+diff --git a/libavcodec/mpegvideo_dec.c b/libavcodec/mpegvideo_dec.c
+index 0c2937a..f518094 100644
+--- a/libavcodec/mpegvideo_dec.c
++++ b/libavcodec/mpegvideo_dec.c
+@@ -35,6 +35,11 @@
+ #include "h264chroma.h"
+ #include "internal.h"
+ #include "mpegutils.h"
++#include "xenon_mpeg.h"
++#if ARCH_PPC && HAVE_ALTIVEC
++#include "simple_idct.h"
++#include "ppc/mpeg_xenon_vmx.h"
++#endif
+ #include "mpegvideo.h"
+ #include "mpegvideodec.h"
+ #include "mpeg4videodec.h"
+@@ -900,14 +905,75 @@ static inline void add_dct(MpegEncContext *s,
+                            int16_t *block, int i, uint8_t *dest, int line_size)
+ {
+     if (s->block_last_index[i] >= 0) {
++#ifdef AVCODEC_PPC_MPEG_XENON_VMX_H
++        /* moonlight-xbox360: ff_xenon_tune's bit 2048, a block of one coefficient without the transform. */
++        if (!s->block_last_index[i] && (ff_xenon_tune & 2048) &&
++            (s->idsp.idct_add == ff_simple_idct_add_int16_8bit || s->idsp.idct_add == ff_xenon_idct_add) &&
++            xm_dc_add(dest, line_size, block))
++            return;
++#endif
+         s->idsp.idct_add(dest, line_size, block);
+     }
+ }
+ 
++/* moonlight-xbox360: an MPEG-2 intra block to its pixels; one with a single coefficient without the transform
++ * (ff_xenon_tune's bit 2048), as add_dct above. */
++static inline void put_intra(MpegEncContext *s, int16_t *block, int i, uint8_t *dest, int line_size)
++{
++#ifdef AVCODEC_PPC_MPEG_XENON_VMX_H
++    if (!s->block_last_index[i] && (ff_xenon_tune & 2048) && s->codec_id == AV_CODEC_ID_MPEG2VIDEO &&
++        (s->idsp.idct_put == ff_simple_idct_put_int16_8bit || s->idsp.idct_put == ff_xenon_idct_put) &&
++        xm_dc_put(dest, line_size, block))
++        return;
++#endif
++    s->idsp.idct_put(dest, line_size, block);
++}
++
+ #define IS_ENCODER 0
+ #include "mpv_reconstruct_mb_template.c"
+ 
++/* moonlight-xbox360: see xenon_mpeg.h */
++uint64_t ff_xenon_mpeg_prof[XMPROF_ROWS][XMPROF_N];
++
++static void reconstruct_mb(MpegEncContext *s, int16_t block[12][64]);
++
+ void ff_mpv_reconstruct_mb(MpegEncContext *s, int16_t block[12][64])
++{
++    if (!ff_xenon_prof) {
++        reconstruct_mb(s, block);
++        return;
++    }
++    uint64_t *const p = ff_xenon_mpeg_prof[s->start_mb_y & (XMPROF_ROWS - 1)];
++    const int intra = s->mb_intra, skipped = s->mb_skipped;
++    p[XMPROF_MBS]++;
++    p[XMPROF_SKIPPED] += skipped;
++    p[XMPROF_INTRA] += intra;
++    if (!intra) {
++        int coded = 0;
++        for (int i = 0; i < 6; i++)
++            coded += s->block_last_index[i] >= 0;
++        p[XMPROF_NO_RESIDUAL] += !coded;
++        if (s->mv_type == MV_TYPE_16X16) {
++            p[XMPROF_ZERO_MV] += !(s->mv[0][0][0] | s->mv[0][0][1]);
++            p[XMPROF_HPEL + ((s->mv[0][0][1] & 1) << 1 | (s->mv[0][0][0] & 1))]++;
++        }
++    }
++    for (int i = 0; i < 6; i++) {
++        const int last = s->block_last_index[i];
++        if (last < 0 && !intra)
++            continue;
++        p[XMPROF_BLOCKS]++;
++        p[XMPROF_BLOCK_KIND + (last <= 0 ? !!block[i][63] : last <= 2 ? 2 : last <= 9 ? 3 : last <= 20 ? 4 : 5)]++;
++    }
++    p[XMPROF_MID] = 0;
++    const uint64_t t0 = ff_xenon_mpeg_ticks();
++    reconstruct_mb(s, block);
++    const uint64_t t1 = ff_xenon_mpeg_ticks(), mid = p[XMPROF_MID] ? p[XMPROF_MID] : t0;
++    p[XMPROF_MC] += mid - t0;
++    p[XMPROF_IDCT] += t1 - mid;
++}
++
++static void reconstruct_mb(MpegEncContext *s, int16_t block[12][64])
+ {
+     if (s->avctx->debug & FF_DEBUG_DCT_COEFF) {
+        /* print DCT coefficients */
+diff --git a/libavcodec/mpv_reconstruct_mb_template.c b/libavcodec/mpv_reconstruct_mb_template.c
+index 50f76fa..61478ae 100644
+--- a/libavcodec/mpv_reconstruct_mb_template.c
++++ b/libavcodec/mpv_reconstruct_mb_template.c
+@@ -153,6 +153,10 @@ void mpv_reconstruct_mb_internal(MpegEncContext *s, int16_t block[12][64],
+                 }
+             }
+ 
++#ifdef AVCODEC_XENON_MPEG_H
++            if (ff_xenon_prof)   /* moonlight-xbox360: where motion ends and the residual begins */
++                ff_xenon_mpeg_prof[s->start_mb_y & (XMPROF_ROWS - 1)][XMPROF_MID] = ff_xenon_mpeg_ticks();
++#endif
+             /* skip dequant / idct if we are really late ;) */
+             if (s->avctx->skip_idct) {
+                 if(  (s->avctx->skip_idct >= AVDISCARD_NONREF && s->pict_type == AV_PICTURE_TYPE_B)
+@@ -252,15 +256,16 @@ void mpv_reconstruct_mb_internal(MpegEncContext *s, int16_t block[12][64],
+             }
+ #if !IS_ENCODER
+               else {
+-                s->idsp.idct_put(dest_y,                           dct_linesize, block[0]);
+-                s->idsp.idct_put(dest_y              + block_size, dct_linesize, block[1]);
+-                s->idsp.idct_put(dest_y + dct_offset,              dct_linesize, block[2]);
+-                s->idsp.idct_put(dest_y + dct_offset + block_size, dct_linesize, block[3]);
++                /* moonlight-xbox360: put_intra, mpegvideo_dec.c */
++                put_intra(s, block[0], 0, dest_y,                           dct_linesize);
++                put_intra(s, block[1], 1, dest_y              + block_size, dct_linesize);
++                put_intra(s, block[2], 2, dest_y + dct_offset,              dct_linesize);
++                put_intra(s, block[3], 3, dest_y + dct_offset + block_size, dct_linesize);
+ 
+                 if (!CONFIG_GRAY || !(s->avctx->flags & AV_CODEC_FLAG_GRAY)) {
+                     if (s->chroma_y_shift) {
+-                        s->idsp.idct_put(dest_cb, uvlinesize, block[4]);
+-                        s->idsp.idct_put(dest_cr, uvlinesize, block[5]);
++                        put_intra(s, block[4], 4, dest_cb, uvlinesize);
++                        put_intra(s, block[5], 5, dest_cr, uvlinesize);
+                     } else {
+                         dct_linesize = uvlinesize << s->interlaced_dct;
+                         dct_offset   = s->interlaced_dct ? uvlinesize : uvlinesize*block_size;
 diff --git a/libavcodec/ppc/fdctdsp.c b/libavcodec/ppc/fdctdsp.c
 index ae3c1b1..904515c 100644
 --- a/libavcodec/ppc/fdctdsp.c
@@ -1481,28 +1669,257 @@ index 304604c..facbbcc 100644
          sum3A = (vec_s16)vec_perm(sum3A, sum3A,vcswapi2s(0,1,2,3));
          sum3B = (vec_s16)vec_perm(sum3B, sum3B,vcswapi2s(0,1,2,3));
 diff --git a/libavcodec/ppc/hpeldsp_altivec.c b/libavcodec/ppc/hpeldsp_altivec.c
-index 4bf6b28..7c5cfb3 100644
+index 4bf6b28..b905eba 100644
 --- a/libavcodec/ppc/hpeldsp_altivec.c
 +++ b/libavcodec/ppc/hpeldsp_altivec.c
-@@ -367,6 +367,9 @@ static void avg_pixels8_xy2_altivec(uint8_t *block, const uint8_t *pixels, ptrdi
+@@ -365,8 +365,195 @@ static void avg_pixels8_xy2_altivec(uint8_t *block, const uint8_t *pixels, ptrdi
+ }
+ #endif /* HAVE_ALTIVEC */
  
++#if HAVE_ALTIVEC
++/* moonlight-xbox360: MPEG-2's block copies for Xenon (Xbox 360): whole-pixel and the three half-pixel cases, 16 and
++ * 8 pixels wide, with nothing but loads, averages and 16-bit adds. The source may lie anywhere; the destination is a
++ * macroblock's place in the picture, so 16-aligned (8 for chroma): anything else goes to the C version. A row reads
++ * at most 15 bytes further than the C code does. */
++#include "h264_xenon_vmx.h"
++
++extern int ff_xenon_tune;   /* h264dec.h */
++static op_pixels_func xenon_c_put[2][4];
++
++/* A row's bytes 0-15 in a and 1-16 in b. */
++XV_INLINE void xv_load17(const uint8_t *src, xv_u8 *a, xv_u8 *b)
++{
++    const xv_u8 v0 = vec_ld(0, src), v1 = vec_ld(16, src), shift = vec_lvsl(0, src);
++    *a = vec_perm(v0, v1, shift);
++    *b = vec_perm(v0, v1, vec_add(shift, vec_splat_u8(1)));
++}
++
++/* Bytes 0-7 of v in both halves, as xv_store8 wants them. */
++XV_INLINE xv_u8 xv_twice(xv_u8 v)
++{
++    static const xv_u8 halves = { 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7 };
++    return vec_perm(v, v, halves);
++}
++
++static void put16_xenon(uint8_t *block, const uint8_t *pixels, ptrdiff_t stride, int h)
++{
++    if ((uintptr_t)block & 15) {
++        xenon_c_put[0][0](block, pixels, stride, h);
++        return;
++    }
++    do {
++        vec_st(xv_load(pixels, 15), 0, block);
++        pixels += stride;
++        block += stride;
++    } while (--h);
++}
++
++static void put16_x2_xenon(uint8_t *block, const uint8_t *pixels, ptrdiff_t stride, int h)
++{
++    if ((uintptr_t)block & 15) {
++        xenon_c_put[0][1](block, pixels, stride, h);
++        return;
++    }
++    do {
++        xv_u8 a, b;
++        xv_load17(pixels, &a, &b);
++        vec_st(vec_avg(a, b), 0, block);
++        pixels += stride;
++        block += stride;
++    } while (--h);
++}
++
++static void put16_y2_xenon(uint8_t *block, const uint8_t *pixels, ptrdiff_t stride, int h)
++{
++    if ((uintptr_t)block & 15) {
++        xenon_c_put[0][2](block, pixels, stride, h);
++        return;
++    }
++    xv_u8 above = xv_load(pixels, 15);
++    do {
++        pixels += stride;
++        const xv_u8 below = xv_load(pixels, 15);
++        vec_st(vec_avg(above, below), 0, block);
++        above = below;
++        block += stride;
++    } while (--h);
++}
++
++/* A row's sums of each pixel and its right neighbour, as 16-bit values: pixels 0-7 and 8-15. */
++XV_INLINE void xv_pair_sums16(const uint8_t *src, xv_u16 *first, xv_u16 *second)
++{
++    const xv_u8 zero = vec_splat_u8(0);
++    xv_u8 a, b;
++    xv_load17(src, &a, &b);
++    *first = vec_add((xv_u16)vec_mergeh(zero, a), (xv_u16)vec_mergeh(zero, b));
++    *second = vec_add((xv_u16)vec_mergel(zero, a), (xv_u16)vec_mergel(zero, b));
++}
++
++static void put16_xy2_xenon(uint8_t *block, const uint8_t *pixels, ptrdiff_t stride, int h)
++{
++    if ((uintptr_t)block & 15) {
++        xenon_c_put[0][3](block, pixels, stride, h);
++        return;
++    }
++    const xv_u16 two = vec_splat_u16(2);
++    xv_u16 above0, above1;
++    xv_pair_sums16(pixels, &above0, &above1);
++    do {
++        xv_u16 below0, below1;
++        pixels += stride;
++        xv_pair_sums16(pixels, &below0, &below1);
++        vec_st(vec_packsu(vec_sr(vec_add(vec_add(above0, below0), two), two),
++                          vec_sr(vec_add(vec_add(above1, below1), two), two)), 0, block);
++        above0 = below0;
++        above1 = below1;
++        block += stride;
++    } while (--h);
++}
++
++static void put8_xenon(uint8_t *block, const uint8_t *pixels, ptrdiff_t stride, int h)
++{
++    if ((uintptr_t)block & 7) {
++        xenon_c_put[1][0](block, pixels, stride, h);
++        return;
++    }
++    do {
++        xv_store8(block, xv_twice(xv_load(pixels, 7)), 0);
++        pixels += stride;
++        block += stride;
++    } while (--h);
++}
++
++static void put8_x2_xenon(uint8_t *block, const uint8_t *pixels, ptrdiff_t stride, int h)
++{
++    if ((uintptr_t)block & 7) {
++        xenon_c_put[1][1](block, pixels, stride, h);
++        return;
++    }
++    do {
++        const xv_u8 a = xv_load(pixels, 8);
++        xv_store8(block, xv_twice(vec_avg(a, vec_sld(a, a, 1))), 0);
++        pixels += stride;
++        block += stride;
++    } while (--h);
++}
++
++static void put8_y2_xenon(uint8_t *block, const uint8_t *pixels, ptrdiff_t stride, int h)
++{
++    if ((uintptr_t)block & 7) {
++        xenon_c_put[1][2](block, pixels, stride, h);
++        return;
++    }
++    xv_u8 above = xv_load(pixels, 7);
++    do {
++        pixels += stride;
++        const xv_u8 below = xv_load(pixels, 7);
++        xv_store8(block, xv_twice(vec_avg(above, below)), 0);
++        above = below;
++        block += stride;
++    } while (--h);
++}
++
++/* A row's sums of each of pixels 0-7 and its right neighbour. */
++XV_INLINE xv_s16 xv_pair_sums8(const uint8_t *src)
++{
++    const xv_u8 a = xv_load(src, 8);
++    return vec_add(xv_widen(a), xv_widen(vec_sld(a, a, 1)));
++}
++
++static void put8_xy2_xenon(uint8_t *block, const uint8_t *pixels, ptrdiff_t stride, int h)
++{
++    if ((uintptr_t)block & 7) {
++        xenon_c_put[1][3](block, pixels, stride, h);
++        return;
++    }
++    const xv_s16 two = vec_splat_s16(2);
++    xv_s16 above = xv_pair_sums8(pixels);
++    do {
++        pixels += stride;
++        const xv_s16 below = xv_pair_sums8(pixels);
++        const xv_s16 r = vec_sra(vec_add(vec_add(above, below), two), vec_splat_u16(2));
++        xv_store8(block, vec_packsu(r, r), 0);
++        above = below;
++        block += stride;
++    } while (--h);
++}
++#endif /* HAVE_ALTIVEC */
++
  av_cold void ff_hpeldsp_init_ppc(HpelDSPContext *c, int flags)
  {
-+    /* Xenon's VMX128 (Xbox 360) lacks the vector integer multiplies this code uses: keep the C versions. */
++#if HAVE_ALTIVEC
++    /* moonlight-xbox360: ff_xenon_tune's bit 1024, read when a decoder opens. */
++    if (ff_xenon_tune & 1024) {
++        static const op_pixels_func xenon_put[2][4] = {
++            { put16_xenon, put16_x2_xenon, put16_y2_xenon, put16_xy2_xenon },
++            { put8_xenon, put8_x2_xenon, put8_y2_xenon, put8_xy2_xenon },
++        };
++        for (int size = 0; size < 2; size++)
++            for (int i = 0; i < 4; i++) {
++                xenon_c_put[size][i] = c->put_pixels_tab[size][i];
++                c->put_pixels_tab[size][i] = xenon_put[size][i];
++            }
++    }
++#endif
++    /* Xenon's VMX128 (Xbox 360): FFmpeg's own AltiVec versions below stay off, as when this file's vector code was
++     * first ruled out; the functions above take their place. */
 +    if (1)
 +        return;
  #if HAVE_ALTIVEC
      if (!PPC_ALTIVEC(av_get_cpu_flags()))
          return;
 diff --git a/libavcodec/ppc/idctdsp.c b/libavcodec/ppc/idctdsp.c
-index a7acbc5..14c6f65 100644
+index a7acbc5..dec101e 100644
 --- a/libavcodec/ppc/idctdsp.c
 +++ b/libavcodec/ppc/idctdsp.c
-@@ -256,6 +256,9 @@ static void idct_add_altivec(uint8_t *dest, ptrdiff_t stride, int16_t *blk)
+@@ -253,9 +253,52 @@ static void idct_add_altivec(uint8_t *dest, ptrdiff_t stride, int16_t *blk)
+ 
+ #endif /* HAVE_ALTIVEC */
+ 
++#if HAVE_ALTIVEC
++/* moonlight-xbox360: FFmpeg's simple IDCT, to the same pixels, in Xenon's vector floats (ppc/mpeg_xenon_vmx.h). */
++#include "libavcodec/simple_idct.h"
++#include "mpeg_xenon_vmx.h"
++
++extern int ff_xenon_tune;   /* h264dec.h */
++
++void ff_xenon_idct_add(uint8_t *dest, ptrdiff_t stride, int16_t *block)
++{
++    if (((uintptr_t)dest & 7) | ((uintptr_t)block & 15))
++        ff_simple_idct_add_int16_8bit(dest, stride, block);
++    else
++        xm_idct(dest, stride, block, 1);
++}
++
++/* For dev/bench: the one-coefficient shortcut on its own (the decoder has it inline). */
++int ff_xenon_dc_add(uint8_t *dest, ptrdiff_t stride, const int16_t *block);
++int ff_xenon_dc_add(uint8_t *dest, ptrdiff_t stride, const int16_t *block)
++{
++    return xm_dc_add(dest, stride, block);
++}
++
++void ff_xenon_idct_put(uint8_t *dest, ptrdiff_t stride, int16_t *block)
++{
++    if (((uintptr_t)dest & 7) | ((uintptr_t)block & 15))
++        ff_simple_idct_put_int16_8bit(dest, stride, block);
++    else
++        xm_idct(dest, stride, block, 0);
++}
++#endif
++
  av_cold void ff_idctdsp_init_ppc(IDCTDSPContext *c, AVCodecContext *avctx,
                                   unsigned high_bit_depth)
  {
-+    /* Xenon's VMX128 (Xbox 360) lacks the vector integer multiplies this code uses: keep the C versions. */
++#if HAVE_ALTIVEC
++    /* moonlight-xbox360: ff_xenon_tune's bit 4096, read when a decoder opens; only in place of the simple IDCT. */
++    if ((ff_xenon_tune & 4096) && c->idct_add == ff_simple_idct_add_int16_8bit &&
++        c->idct_put == ff_simple_idct_put_int16_8bit) {
++        c->idct_add = ff_xenon_idct_add;
++        c->idct_put = ff_xenon_idct_put;
++    }
++#endif
++    /* Xenon's VMX128 (Xbox 360) lacks the vector integer multiplies FFmpeg's own AltiVec IDCT uses, and that IDCT
++     * is not the simple one bit for bit: off. */
 +    if (1)
 +        return;
  #if HAVE_ALTIVEC
@@ -1522,6 +1939,555 @@ index 90f2152..ffa2547 100644
  #if HAVE_ALTIVEC
      if (!PPC_ALTIVEC(av_get_cpu_flags()))
          return;
+diff --git a/libavcodec/ppc/mpeg_xenon_vmx.h b/libavcodec/ppc/mpeg_xenon_vmx.h
+new file mode 100644
+index 0000000..e41dc61
+--- /dev/null
++++ b/libavcodec/ppc/mpeg_xenon_vmx.h
+@@ -0,0 +1,543 @@
++/* MPEG-2's residual for Xenon's VMX128 (Xbox 360): the blocks that need no transform.
++ * Part of FFmpeg, under its license (LGPL 2.1 or later, COPYING.LGPLv2.1); patches/ffmpeg-xenon-vmx128.patch. */
++
++#ifndef AVCODEC_PPC_MPEG_XENON_VMX_H
++#define AVCODEC_PPC_MPEG_XENON_VMX_H
++
++#include "h264_xenon_vmx.h"
++
++/* Generated (see the comment above xm_dc_add): by DC coefficient + 2048, which pattern. */
++static const uint8_t xm_mismatch_pattern[4096] = {
++    0,0,1,2,3,4,0,0,0,0,1,2,3,4,0,0,0,0,1,2,3,4,0,0,0,0,1,2,3,4,0,0,
++    0,0,1,2,3,4,0,0,0,0,1,2,3,4,0,0,0,0,1,2,3,4,0,0,0,0,1,2,3,4,0,0,
++    0,0,1,2,3,4,0,0,0,0,1,2,3,4,0,0,0,0,1,2,3,4,0,0,0,0,1,2,3,4,0,0,
++    0,0,1,2,3,4,0,0,0,0,1,2,3,4,0,0,0,0,1,5,3,4,0,0,0,0,1,5,3,4,0,0,
++    0,0,1,5,3,4,0,0,0,0,1,5,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,
++    0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,
++    0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,
++    0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,
++    0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,
++    0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,
++    0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,
++    0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,
++    0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,
++    0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,
++    0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,
++    0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,
++    0,0,1,6,3,4,0,0,0,0,1,6,3,4,0,0,0,0,0,6,3,4,0,0,0,0,0,6,3,4,0,0,
++    0,0,0,6,3,4,0,0,0,0,0,6,3,4,0,0,0,0,0,6,3,4,0,0,0,0,0,6,3,4,0,0,
++    0,0,0,6,3,4,0,0,0,0,0,6,3,4,0,0,0,0,0,6,3,4,0,0,0,0,0,6,3,4,0,0,
++    0,0,0,6,3,4,0,0,0,0,0,6,3,4,0,0,0,0,0,6,3,4,0,0,0,0,0,6,3,4,0,0,
++    0,0,0,6,3,4,0,0,0,0,0,6,3,4,0,0,0,0,0,6,3,4,0,0,0,0,0,6,3,4,0,0,
++    0,0,0,6,3,4,0,0,0,0,0,6,3,4,0,0,0,0,0,6,3,4,0,0,0,0,0,6,3,4,0,0,
++    0,0,0,6,3,4,0,0,0,0,0,6,3,4,0,0,0,0,0,6,3,4,0,0,0,0,0,6,3,7,0,0,
++    0,0,0,6,3,7,0,0,0,0,0,6,3,7,0,0,0,0,0,6,3,7,0,0,0,0,0,6,3,7,0,0,
++    0,0,0,6,3,7,0,0,0,0,0,6,3,7,0,0,0,0,0,6,3,7,0,0,0,0,0,6,3,7,0,0,
++    0,0,0,6,3,7,0,0,0,0,0,6,3,7,0,0,0,0,0,6,3,7,0,0,0,0,0,6,3,7,0,0,
++    0,0,0,6,3,7,0,0,0,0,0,6,3,7,0,0,0,0,0,6,3,7,0,0,0,0,0,6,3,7,0,0,
++    0,0,0,6,3,7,0,0,0,0,0,6,3,7,0,0,0,0,0,6,3,7,0,0,0,0,0,6,3,7,0,0,
++    0,0,0,6,3,7,0,0,0,0,0,6,3,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,
++    0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,
++    0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,
++    0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,
++    0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,
++    0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,
++    0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,
++    0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,
++    0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,
++    0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,
++    0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,
++    0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,
++    0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,
++    0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,
++    0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,0,0,0,6,8,7,0,0,
++    0,0,0,6,8,7,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,
++    0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,
++    0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,
++    0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,
++    0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,
++    0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,
++    0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,
++    0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,
++    0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,
++    0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,
++    0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,
++    0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,
++    0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,
++    0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,
++    0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,
++    0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,
++    0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,
++    0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,
++    0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,
++    0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,
++    0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,0,0,0,6,8,9,0,0,
++    0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,
++    0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,
++    0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,
++    0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,
++    0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,
++    0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,
++    0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,
++    0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,
++    0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,
++    0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,
++    0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,
++    0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,
++    0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,
++    0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,
++    0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,
++    0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,
++    0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,
++    0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,
++    0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,
++    0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,
++    0,0,0,6,10,9,0,0,0,0,0,6,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,
++    0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,
++    0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,
++    0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,
++    0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,
++    0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,
++    0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,
++    0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,
++    0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,
++    0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,
++    0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,
++    0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,
++    0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,
++    0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,
++    0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,0,0,0,11,10,9,0,0,
++    0,0,0,11,10,9,0,0,0,0,0,11,12,9,0,0,0,0,0,11,12,9,0,0,0,0,0,11,12,9,0,0,
++    0,0,0,11,12,9,0,0,0,0,0,11,12,9,0,0,0,0,0,11,12,9,0,0,0,0,0,11,12,9,0,0,
++    0,0,0,11,12,9,0,0,0,0,0,11,12,9,0,0,0,0,0,11,12,9,0,0,0,0,0,11,12,9,0,0,
++    0,0,0,11,12,9,0,0,0,0,0,11,12,9,0,0,0,0,0,11,12,9,0,0,0,0,0,11,12,9,0,0,
++    0,0,0,11,12,9,0,0,0,0,0,11,12,9,0,0,0,0,0,11,12,9,0,0,0,0,0,11,12,9,0,0,
++    0,0,0,11,12,9,0,0,0,0,0,11,12,9,0,0,0,0,0,11,12,9,0,0,0,0,0,11,12,9,0,0,
++    0,0,0,13,12,9,0,0,0,0,0,13,12,9,0,0,0,0,0,13,12,9,0,0,0,0,0,13,12,9,0,0,
++    0,0,0,13,12,9,0,0,0,0,0,13,12,9,0,0,0,0,0,13,12,9,0,0,0,0,0,13,12,9,0,0,
++    0,0,0,13,12,9,0,0,0,0,0,13,12,9,0,0,0,0,0,13,12,9,0,0,0,0,0,13,12,9,0,0,
++    0,0,0,13,12,9,0,0,0,0,0,13,12,9,0,0,0,0,0,13,12,9,0,0,0,0,0,13,12,9,0,0,
++    0,0,0,13,12,9,0,0,0,0,0,13,12,9,0,0,0,0,0,13,12,9,0,0,0,0,0,13,12,9,0,0,
++    0,0,0,13,12,9,0,0,0,0,0,13,12,9,0,0,0,0,0,13,12,9,0,0,0,0,0,13,12,9,0,0,
++    0,0,0,13,12,9,0,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,
++    0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,
++    0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,
++    0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,
++    0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,
++    0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,
++    0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,
++    0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,
++    0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,
++    0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,
++    0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,
++    0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,0,0,0,13,12,9,14,0,
++    0,0,0,13,12,9,14,0,0,0,0,13,12,15,14,0,0,0,0,13,12,15,14,0,0,0,0,13,12,15,14,0,
++    0,0,0,13,12,15,14,0,0,0,0,13,12,16,14,0,0,0,0,13,12,16,14,0,0,0,0,13,12,16,14,0,
++    0,0,0,13,12,16,14,0,0,0,0,13,12,16,14,0,0,0,0,13,12,16,14,0,0,0,0,13,12,16,14,0,
++    0,0,0,13,12,16,14,0,0,0,0,13,12,16,14,0,0,0,0,13,12,16,14,0,0,0,0,13,12,16,14,0,
++    0,0,0,13,12,16,14,0,0,0,0,13,12,16,14,0,0,0,0,13,12,16,14,0,0,0,0,13,12,16,14,0,
++};
++/* The patterns, a row of eight a line; pattern 0 is none. */
++static const int8_t xm_mismatch_patterns[17][64] __attribute__((aligned(16))) = {
++    { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
++    { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
++    { 0,0,0,0,0,0,0,0,0,0,0,1,0,1,0,0,0,0,1,0,1,0,1,0,0,1,0,1,0,1,0,0,0,0,1,0,1,0,1,0,0,1,0,1,0,1,0,0,0,0,1,0,1,0,0,0,0,0,0,0,0,0,0,0 },
++    { 0,-1,0,-1,0,-1,0,0,-1,0,-1,0,-1,0,-1,0,0,-1,0,-1,0,-1,0,-1,-1,0,-1,0,-1,0,-1,0,0,-1,0,-1,0,-1,0,-1,-1,0,-1,0,-1,0,-1,0,0,-1,0,-1,0,-1,0,-1,0,0,-1,0,-1,0,-1,0 },
++    { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,0,-1,0,0,0,0,-1,0,-1,0,0,0,0,0,0,-1,0,-1,0,0,0,0,-1,0,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
++    { 0,0,0,0,0,0,0,0,0,0,0,1,0,1,0,0,0,0,1,0,1,0,0,0,0,1,0,1,0,1,0,0,0,0,1,0,1,0,1,0,0,0,0,1,0,1,0,0,0,0,1,0,1,0,0,0,0,0,0,0,0,0,0,0 },
++    { 0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,1,0,1,0,0,0,0,1,0,1,0,1,0,0,0,0,1,0,1,0,1,0,0,0,0,1,0,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0 },
++    { 0,0,0,0,0,0,0,0,0,0,0,0,-1,0,0,0,0,0,0,-1,0,-1,0,0,0,0,-1,0,-1,0,0,0,0,0,0,-1,0,-1,0,0,0,0,-1,0,-1,0,0,0,0,0,0,-1,0,0,0,0,0,0,0,0,0,0,0,0 },
++    { 0,-1,0,-1,0,-1,0,-1,-1,0,-1,0,-1,0,-1,0,0,-1,0,-1,0,-1,0,-1,-1,0,-1,0,-1,0,-1,0,0,-1,0,-1,0,-1,0,-1,-1,0,-1,0,-1,0,-1,0,0,-1,0,-1,0,-1,0,-1,-1,0,-1,0,-1,0,-1,0 },
++    { 0,0,0,0,0,0,0,0,0,0,0,0,-1,0,0,0,0,0,0,-1,0,-1,0,0,0,0,-1,0,-1,0,-1,0,0,-1,0,-1,0,-1,0,0,0,0,-1,0,-1,0,0,0,0,0,0,-1,0,0,0,0,0,0,0,0,0,0,0,0 },
++    { 1,0,1,0,1,0,1,0,0,1,0,1,0,1,0,1,1,0,1,0,1,0,1,0,0,1,0,1,0,1,0,1,1,0,1,0,1,0,1,0,0,1,0,1,0,1,0,1,1,0,1,0,1,0,1,0,0,1,0,1,0,1,0,1 },
++    { 0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,1,0,1,0,0,0,0,0,0,1,0,1,0,0,0,0,1,0,1,0,0,0,0,0,0,1,0,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0 },
++    { 0,0,1,0,1,0,1,0,0,1,0,1,0,1,0,1,1,0,1,0,1,0,1,0,0,1,0,1,0,1,0,1,1,0,1,0,1,0,1,0,0,1,0,1,0,1,0,1,1,0,1,0,1,0,1,0,0,1,0,1,0,1,0,0 },
++    { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,1,0,0,0,0,0,0,1,0,1,0,0,0,0,1,0,1,0,0,0,0,0,0,1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
++    { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,0,0,0,0,0,0,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
++    { 0,0,0,0,0,0,0,0,0,0,-1,0,-1,0,0,0,0,0,0,-1,0,-1,0,0,0,0,-1,0,-1,0,-1,0,0,-1,0,-1,0,-1,0,0,0,0,-1,0,-1,0,0,0,0,0,0,-1,0,-1,0,0,0,0,0,0,0,0,0,0 },
++    { 0,0,0,0,0,0,0,0,0,0,-1,0,-1,0,0,0,0,-1,0,-1,0,-1,0,0,0,0,-1,0,-1,0,-1,0,0,-1,0,-1,0,-1,0,0,0,0,-1,0,-1,0,-1,0,0,0,0,-1,0,-1,0,0,0,0,0,0,0,0,0,0 },
++};
++
++/* Sixteen bytes of n (0 to 255), made without a trip through memory: a vector load behind the store of the value
++ * would wait about 60 cycles on this CPU. lvsl gives the low four bits of an address as its first byte. */
++XV_INLINE xv_u8 xv_splat_byte(unsigned n)
++{
++    const xv_u8 low = vec_splat(vec_lvsl(0, (const uint8_t *)(uintptr_t)(n & 15)), 0);
++    const xv_u8 high = vec_splat(vec_lvsl(0, (const uint8_t *)(uintptr_t)(n >> 4)), 0);
++    return vec_add(low, vec_sl(high, vec_splat_u8(4)));
++}
++
++/* Adds an inter block to its eight by eight pixels when the block's last coefficient in scan order is the first:
++ * then only the DC coefficient is set, and perhaps the very last one at 1, which MPEG-2's mismatch control toggles in
++ * about half of all blocks. Nearly half of a stream's blocks are of this kind. FFmpeg's simple IDCT, which the
++ * encoder's pictures are made with too, turns the DC coefficient alone into one value q for all 64 pixels, and the
++ * two together into q plus a pattern of -1, 0 and +1 that depends on the DC coefficient: 17 patterns in all, for
++ * most DC values the empty one. The tables hold them (made by trying every DC value against the IDCT's arithmetic;
++ * checked against ff_simple_idct_add_int16_8bit for each). The same pixels as the IDCT, without its multiplies.
++ * Returns 0, with nothing done, for a block or a destination it doesn't cover. dest is 8-aligned. */
++XV_INLINE int xm_dc_add(uint8_t *dest, ptrdiff_t stride, const int16_t *block)
++{
++    const int dc = block[0];
++    if ((unsigned)(dc + 2048) >= 4096 || (unsigned)block[63] > 1 || ((uintptr_t)dest & 7))
++        return 0;
++    const int q = (131064 * (dc + 4)) >> 20;   /* W4 * (8 * dc + 32) >> 20: -256 to 256 */
++    const int pattern = block[63] ? xm_mismatch_pattern[dc + 2048] : 0;
++    if (!pattern) {
++        /* One value for all: a saturating add or subtract of bytes clips as the IDCT's add does. */
++        if (!q)
++            return 1;
++        const int size = q < 0 ? -q : q;
++        const xv_u8 amount = xv_splat_byte(size > 255 ? 255 : size);   /* 255 already clips any pixel */
++        if (q > 0)
++            for (int y = 0; y < 8; y++, dest += stride)
++                xv_store8(dest, vec_adds(vec_ld(0, dest), amount), 0);
++        else
++            for (int y = 0; y < 8; y++, dest += stride)
++                xv_store8(dest, vec_subs(vec_ld(0, dest), amount), 0);
++        return 1;
++    }
++    const int8_t *const rows = xm_mismatch_patterns[pattern];
++    const xv_u8 high = q < 0 ? (xv_u8)vec_splat_s8(-1) : q > 255 ? vec_splat_u8(1) : vec_splat_u8(0);
++    const xv_s16 q16 = (xv_s16)vec_mergeh(high, xv_splat_byte(q & 255));
++    for (int y = 0; y < 8; y += 2) {
++        const xv_s8 two = vec_ld(y * 8, rows);
++        xv_s16 r = vec_add(vec_add(q16, vec_unpackh(two)), xv_widen(xv_load(dest, 7)));
++        xv_store8(dest, vec_packsu(r, r), 0);
++        dest += stride;
++        r = vec_add(vec_add(q16, vec_unpackl(two)), xv_widen(xv_load(dest, 7)));
++        xv_store8(dest, vec_packsu(r, r), 0);
++        dest += stride;
++    }
++    return 1;
++}
++
++/* The same for an intra block, whose pixels are the transform's values themselves: q and the pattern, clipped. */
++XV_INLINE int xm_dc_put(uint8_t *dest, ptrdiff_t stride, const int16_t *block)
++{
++    const int dc = block[0];
++    if ((unsigned)(dc + 2048) >= 4096 || (unsigned)block[63] > 1 || ((uintptr_t)dest & 7))
++        return 0;
++    const int q = (131064 * (dc + 4)) >> 20;
++    const int pattern = block[63] ? xm_mismatch_pattern[dc + 2048] : 0;
++    if (!pattern) {
++        const xv_u8 value = xv_splat_byte(q < 0 ? 0 : q > 255 ? 255 : q);
++        for (int y = 0; y < 8; y++, dest += stride)
++            xv_store8(dest, value, 0);
++        return 1;
++    }
++    const int8_t *const rows = xm_mismatch_patterns[pattern];
++    const xv_u8 high = q < 0 ? (xv_u8)vec_splat_s8(-1) : q > 255 ? vec_splat_u8(1) : vec_splat_u8(0);
++    const xv_s16 q16 = (xv_s16)vec_mergeh(high, xv_splat_byte(q & 255));
++    for (int y = 0; y < 8; y += 2) {
++        const xv_s8 two = vec_ld(y * 8, rows);
++        xv_s16 r = vec_add(q16, vec_unpackh(two));
++        xv_store8(dest, vec_packsu(r, r), 0);
++        dest += stride;
++        r = vec_add(q16, vec_unpackl(two));
++        xv_store8(dest, vec_packsu(r, r), 0);
++        dest += stride;
++    }
++    return 1;
++}
++
++/* ---- The 8x8 inverse transform ----
++ * FFmpeg's simple IDCT (simple_idct_template.c, 8 bits), the one the encoder's pictures are made with too, so
++ * every pixel must come out the same: in C it is some 350 integer multiplies a block, about 3,400 cycles on this CPU
++ * (decbench, 2026-11-25), and VMX128 has no integer multiply at all. It does multiply floats, and a float holds
++ * integers up to 2^24 exactly. So each 16-bit input is split into its low 8 bits and the rest, both small enough
++ * that their products with the transform's constants, and the sums of up to four of those, stay under 2^24:
++ * computed in floats they are exact whatever the rounding mode, and the two halves are put together as integers.
++ * The products with W4 = 2^14 - 1 are a shift and a subtraction. Sums of 32 bits wrap as the C code's do. */
++typedef __vector signed int xv_s32;
++typedef __vector float xv_f32;
++
++#define XM_W1 22725
++#define XM_W2 21407
++#define XM_W3 19266
++#define XM_W5 12873
++#define XM_W6 8867
++#define XM_W7 4520
++static const float xm_w[6][4] __attribute__((aligned(16))) = {
++    { XM_W1, XM_W1, XM_W1, XM_W1 }, { XM_W2, XM_W2, XM_W2, XM_W2 }, { XM_W3, XM_W3, XM_W3, XM_W3 },
++    { XM_W5, XM_W5, XM_W5, XM_W5 }, { XM_W6, XM_W6, XM_W6, XM_W6 }, { XM_W7, XM_W7, XM_W7, XM_W7 },
++};
++static const int32_t xm_ints[3][4] __attribute__((aligned(16))) = {
++    { 255, 255, 255, 255 }, { 524256, 524256, 524256, 524256 } /* W4 * 32 */, { 20, 20, 20, 20 },
++};
++/* A block whose rows 4 to 7 hold nothing but the mismatch bit (the last coefficient at 1): the row pass turns row 7
++ * into 2 -6 9 -11 11 -9 6 -2. Rows 6 and 7 as the column pass takes them, for columns 0 to 3 and 4 to 7; and what
++ * row 7 then adds to the column pass's odd half, b0 to b3, in the same columns. */
++static const int16_t xm_mismatch_rows[2][8] __attribute__((aligned(16))) = {
++    { 0, 0, 0, 0, 2, -6, 9, -11 }, { 0, 0, 0, 0, 11, -9, 6, -2 },
++};
++#define XM_MISMATCH_B(w) { 2 * (w), -6 * (w), 9 * (w), -11 * (w) }, { 11 * (w), -9 * (w), 6 * (w), -2 * (w) }
++static const int32_t xm_mismatch_b[4][2][4] __attribute__((aligned(16))) = {
++    { XM_MISMATCH_B(XM_W7) }, { XM_MISMATCH_B(-XM_W5) }, { XM_MISMATCH_B(XM_W3) }, { XM_MISMATCH_B(-XM_W1) },
++};
++static const uint8_t xm_halves[2][16] __attribute__((aligned(16))) = {
++    { 0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23 },
++    { 8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31 },
++};
++
++/* Which of a pass's eight inputs there are: all; x0 to x3 only (the rest are zero and not looked at); or, in the
++ * column pass, x0 to x3 and the mismatch bit's row 7, whose share is the constants above. */
++enum { XM_ALL, XM_FOUR, XM_FOUR_AND_MISMATCH };
++
++/* A constant from memory, loaded where it is used: the compiler would otherwise hold every constant of the
++ * transform in a register from start to end, and has only 32 for the lot. What doesn't fit goes to the stack, and
++ * a value read back soon after it was stored there costs this CPU some 60 cycles. */
++XV_INLINE xv_f32 xm_weight(int i)
++{
++    const float *p = xm_w[i];
++    __asm__("" : "+b"(p));
++    return vec_ld(0, p);
++}
++
++XV_INLINE xv_s32 xm_int(int i)
++{
++    const int32_t *p = xm_ints[i];
++    __asm__("" : "+b"(p));
++    return vec_ld(0, p);
++}
++
++/* Nothing that uses v is done before this point, and everything written above it is done by here: the compiler
++ * otherwise starts on a later pass's sums in the middle of an earlier one (and lifts what three branches have in
++ * common above the branch), which takes more registers than there are. No instruction comes of it. */
++#define XM_FROM_HERE(v) __asm__ volatile("" : "+v"(v))
++
++/* w * x for 32-bit lanes within 16 bits, as floats: the low 8 bits' share and the rest's. */
++#define XM_SPLIT(x, from) \
++    const xv_s32 x = from; \
++    const xv_f32 x##l = vec_ctf(vec_and(x, low), 0), x##h = vec_ctf(vec_sra(x, eight), 0)
++/* The two shares of a sum back together: an exact 32-bit integer. */
++#define XM_JOIN(s) vec_add(vec_cts(s##h, 8), vec_cts(s##l, 0))
++
++/* One pass over four rows or four columns at once, a lane each. A row's (column's) eight values x0 to x7 come two
++ * to a vector, 16 bits each: x0 in the first half of p01 and x1 in the second, and so on; o0 to o7 are its results
++ * as 32-bit integers, (a +- b) >> shift. rows: the row pass, where the C code turns a row with nothing but its first
++ * value into eight times that value, not what the formula gives. half: for XM_FOUR_AND_MISMATCH, which columns the
++ * lanes are (0: 0 to 3, 1: 4 to 7).
++ * Macros, not functions: results handed back through pointers, even from an inlined function, are kept on the
++ * stack by this compiler, and each is read back within a few instructions of being stored. */
++#define XM_PASS(p01, p23, p45, p67, rows, inputs, half, o0, o1, o2, o3, o4, o5, o6, o7) \
++    do { \
++        const int all = (inputs) == XM_ALL; \
++        const xv_s32 low = xm_int(0); \
++        xv_u32 eight = vec_splat_u32(8); \
++        xv_f32 zero = (xv_f32)vec_splat_u32(0); \
++        XM_FROM_HERE(eight); \
++        XM_FROM_HERE(zero); \
++        /* The odd half first (it needs the most registers, and the even half's sums would hold four of them): an \
++         * input at a time over all eight sums, so that no multiply waits for the one before it. */ \
++        xv_s32 b0, b1, b2, b3; \
++        { \
++            const xv_f32 w1 = xm_weight(0), w3 = xm_weight(2), w5 = xm_weight(3), w7 = xm_weight(5); \
++            xv_f32 b0l, b0h, b1l, b1h, b2l, b2h, b3l, b3h; \
++            { \
++                XM_SPLIT(x1, vec_unpackl(p01)); \
++                b0l = vec_madd(w1, x1l, zero); \
++                b0h = vec_madd(w1, x1h, zero); \
++                b1l = vec_madd(w3, x1l, zero); \
++                b1h = vec_madd(w3, x1h, zero); \
++                b2l = vec_madd(w5, x1l, zero); \
++                b2h = vec_madd(w5, x1h, zero); \
++                b3l = vec_madd(w7, x1l, zero); \
++                b3h = vec_madd(w7, x1h, zero); \
++            } \
++            { \
++                XM_SPLIT(x3, vec_unpackl(p23)); \
++                b0l = vec_madd(w3, x3l, b0l); \
++                b0h = vec_madd(w3, x3h, b0h); \
++                b1l = vec_nmsub(w7, x3l, b1l); \
++                b1h = vec_nmsub(w7, x3h, b1h); \
++                b2l = vec_nmsub(w1, x3l, b2l); \
++                b2h = vec_nmsub(w1, x3h, b2h); \
++                b3l = vec_nmsub(w5, x3l, b3l); \
++                b3h = vec_nmsub(w5, x3h, b3h); \
++            } \
++            if (all) { \
++                { \
++                    XM_SPLIT(x5, vec_unpackl(p45)); \
++                    b0l = vec_madd(w5, x5l, b0l); \
++                    b0h = vec_madd(w5, x5h, b0h); \
++                    b1l = vec_nmsub(w1, x5l, b1l); \
++                    b1h = vec_nmsub(w1, x5h, b1h); \
++                    b2l = vec_madd(w7, x5l, b2l); \
++                    b2h = vec_madd(w7, x5h, b2h); \
++                    b3l = vec_madd(w3, x5l, b3l); \
++                    b3h = vec_madd(w3, x5h, b3h); \
++                } \
++                { \
++                    XM_SPLIT(x7, vec_unpackl(p67)); \
++                    b0l = vec_madd(w7, x7l, b0l); \
++                    b0h = vec_madd(w7, x7h, b0h); \
++                    b1l = vec_nmsub(w5, x7l, b1l); \
++                    b1h = vec_nmsub(w5, x7h, b1h); \
++                    b2l = vec_madd(w3, x7l, b2l); \
++                    b2h = vec_madd(w3, x7h, b2h); \
++                    b3l = vec_nmsub(w1, x7l, b3l); \
++                    b3h = vec_nmsub(w1, x7h, b3h); \
++                } \
++            } \
++            b0 = XM_JOIN(b0); \
++            b1 = XM_JOIN(b1); \
++            b2 = XM_JOIN(b2); \
++            b3 = XM_JOIN(b3); \
++            if ((inputs) == XM_FOUR_AND_MISMATCH) { \
++                b0 = vec_add(b0, vec_ld(0, xm_mismatch_b[0][half])); \
++                b1 = vec_add(b1, vec_ld(0, xm_mismatch_b[1][half])); \
++                b2 = vec_add(b2, vec_ld(0, xm_mismatch_b[2][half])); \
++                b3 = vec_add(b3, vec_ld(0, xm_mismatch_b[3][half])); \
++            } \
++        } \
++        XM_FROM_HERE(b0); \
++        /* The even half: W4 = 2^14 - 1 times x0 +- x4, and W2 and W6 on x2 and x6. */ \
++        xv_s32 e, d, u, v; \
++        { \
++            xv_u32 fourteen = vec_splat_u32(14); \
++            XM_FROM_HERE(fourteen); \
++            const xv_s32 round = (rows) ? vec_sl(vec_splat_s32(1), vec_splat_u32(10)) : xm_int(1); \
++            const xv_s32 x0 = vec_unpackh(p01); \
++            xv_s32 sum = x0, difference = x0; \
++            if (all) { \
++                const xv_s32 x4 = vec_unpackh(p45); \
++                sum = vec_add(x0, x4); \
++                difference = vec_sub(x0, x4); \
++            } \
++            const xv_s32 sum14 = vec_sl(sum, fourteen), difference14 = all ? vec_sl(difference, fourteen) : sum14; \
++            e = vec_add(vec_sub(sum14, sum), round); \
++            d = all ? vec_add(vec_sub(difference14, difference), round) : e; \
++            if (rows) { \
++                /* Lanes whose x1 to x7 are all zero. */ \
++                xv_s32 others = vec_or(vec_unpackl(p01), vec_or(vec_unpackh(p23), vec_unpackl(p23))); \
++                if (all) { \
++                    const xv_s16 rest = vec_or(p45, p67); \
++                    others = vec_or(others, vec_or(vec_unpackh(rest), vec_unpackl(rest))); \
++                } \
++                const __vector __bool int dc_only = vec_cmpeq(others, vec_splat_s32(0)); \
++                e = vec_sel(e, sum14, dc_only); \
++                d = all ? vec_sel(d, difference14, dc_only) : e; \
++            } \
++            const xv_f32 w2 = xm_weight(1), w6 = xm_weight(4); \
++            XM_SPLIT(x2, vec_unpackh(p23)); \
++            xv_f32 ul = vec_madd(w2, x2l, zero), uh = vec_madd(w2, x2h, zero); \
++            xv_f32 vl = vec_madd(w6, x2l, zero), vh = vec_madd(w6, x2h, zero); \
++            if (all) { \
++                XM_SPLIT(x6, vec_unpackh(p67)); \
++                ul = vec_madd(w6, x6l, ul); \
++                uh = vec_madd(w6, x6h, uh); \
++                vl = vec_nmsub(w2, x6l, vl); \
++                vh = vec_nmsub(w2, x6h, vh); \
++            } \
++            u = XM_JOIN(u); \
++            v = XM_JOIN(v); \
++        } \
++        const xv_s32 a0 = vec_add(e, u), a1 = vec_add(d, v), a2 = vec_sub(d, v), a3 = vec_sub(e, u); \
++        const xv_u32 shift = (rows) ? vec_splat_u32(11) : (xv_u32)xm_int(2); \
++        o0 = vec_sra(vec_add(a0, b0), shift); \
++        o7 = vec_sra(vec_sub(a0, b0), shift); \
++        o1 = vec_sra(vec_add(a1, b1), shift); \
++        o6 = vec_sra(vec_sub(a1, b1), shift); \
++        o2 = vec_sra(vec_add(a2, b2), shift); \
++        o5 = vec_sra(vec_sub(a2, b2), shift); \
++        o3 = vec_sra(vec_add(a3, b3), shift); \
++        o4 = vec_sra(vec_sub(a3, b3), shift); \
++    } while (0)
++
++/* The row pass over four of the block's rows, r0 to r3: its results as the column pass takes them, 16 bits each as
++ * the C code stores them, two rows a vector: the four rows' columns 0 to 3 in y01 and y23, columns 4 to 7 in z01
++ * and z23. four: the rows' columns 4 to 7 are empty. */
++#define XM_ROW_PASS(r0, r1, r2, r3, four, y01, y23, z01, z23) \
++    do { \
++        xv_s16 rr0 = r0; \
++        XM_FROM_HERE(rr0); \
++        /* x0 to x7: a lane a row. */ \
++        const xv_s16 rt0 = vec_mergeh(rr0, r2), rt1 = vec_mergeh(r1, r3); \
++        const xv_s16 c01 = vec_mergeh(rt0, rt1), c23 = vec_mergel(rt0, rt1); \
++        xv_s16 c45 = c01, c67 = c01; \
++        if (!(four)) { \
++            const xv_s16 rt2 = vec_mergel(rr0, r2), rt3 = vec_mergel(r1, r3); \
++            c45 = vec_mergeh(rt2, rt3); \
++            c67 = vec_mergel(rt2, rt3); \
++        } \
++        xv_s32 ro0, ro1, ro2, ro3, ro4, ro5, ro6, ro7; \
++        XM_PASS(c01, c23, c45, c67, 1, (four) ? XM_FOUR : XM_ALL, 0, ro0, ro1, ro2, ro3, ro4, ro5, ro6, ro7); \
++        /* Back to a row a group of four, cut to 16 bits. */ \
++        const xv_s16 p02 = vec_pack(ro0, ro2), p13 = vec_pack(ro1, ro3); \
++        const xv_s16 p46 = vec_pack(ro4, ro6), p57 = vec_pack(ro5, ro7); \
++        const xv_s32 m0 = (xv_s32)vec_mergeh(p02, p13), m1 = (xv_s32)vec_mergel(p02, p13); \
++        const xv_s32 m2 = (xv_s32)vec_mergeh(p46, p57), m3 = (xv_s32)vec_mergel(p46, p57); \
++        y01 = (xv_s16)vec_mergeh(m0, m1); \
++        y23 = (xv_s16)vec_mergel(m0, m1); \
++        z01 = (xv_s16)vec_mergeh(m2, m3); \
++        z23 = (xv_s16)vec_mergel(m2, m3); \
++    } while (0)
++
++/* The column pass over four columns: two rows a vector in, two rows a vector out (16 bits, the four columns of one
++ * row, then of the next). */
++#define XM_COLUMN_PASS(y01, y23, y45, y67, inputs, half, q01, q23, q45, q67) \
++    do { \
++        xv_s16 cy01 = y01, cy23 = y23, cy45 = y45, cy67 = y67; \
++        XM_FROM_HERE(cy01); \
++        XM_FROM_HERE(cy23); \
++        XM_FROM_HERE(cy45); \
++        XM_FROM_HERE(cy67); \
++        xv_s32 co0, co1, co2, co3, co4, co5, co6, co7; \
++        XM_PASS(cy01, cy23, cy45, cy67, 0, inputs, half, co0, co1, co2, co3, co4, co5, co6, co7); \
++        q01 = vec_packs(co0, co1); \
++        q23 = vec_packs(co2, co3); \
++        q45 = vec_packs(co4, co5); \
++        q67 = vec_packs(co6, co7); \
++    } while (0)
++
++/* Two rows of results (columns 0 to 3 in q, 4 to 7 in w) added to the pixels at dest, or put there. */
++XV_INLINE uint8_t *xm_two_rows(uint8_t *dest, ptrdiff_t stride, xv_s16 q, xv_s16 w, int add)
++{
++    xv_s16 first = vec_perm(q, w, vec_ld(0, xm_halves[0])), second = vec_perm(q, w, vec_ld(0, xm_halves[1]));
++    if (add)
++        first = vec_add(first, xv_widen(xv_load(dest, 7)));
++    xv_store8(dest, vec_packsu(first, first), 0);
++    dest += stride;
++    if (add)
++        second = vec_add(second, xv_widen(xv_load(dest, 7)));
++    xv_store8(dest, vec_packsu(second, second), 0);
++    return dest + stride;
++}
++
++/* The block's transform, added to the 8x8 pixels at dest (add) or put there. block and dest's rows are aligned as
++ * the decoder has them: the block to 16 bytes, dest to 8. Leaves the block as it was. */
++XV_INLINE void xm_idct(uint8_t *dest, ptrdiff_t stride, const int16_t *block, int add)
++{
++    typedef uint64_t __attribute__((may_alias)) xm_u64;
++    const xm_u64 *const halves = (const xm_u64 *)block;   /* half a row of the block each; big-endian, so the last
++                                                             holding only the mismatch bit reads as 1 */
++    const xv_s16 r0 = vec_ld(0, block), r1 = vec_ld(16, block), r2 = vec_ld(32, block), r3 = vec_ld(48, block);
++    xv_s16 y01, y23, z01, z23, q01, q23, q45, q67, w01, w23, w45, w67;
++
++    if (halves[1] | halves[3] | halves[5] | halves[7])
++        XM_ROW_PASS(r0, r1, r2, r3, 0, y01, y23, z01, z23);
++    else
++        XM_ROW_PASS(r0, r1, r2, r3, 1, y01, y23, z01, z23);
++    if (halves[8] | halves[9] | halves[10] | halves[11] | halves[12] | halves[13] | halves[14] | (halves[15] > 1)) {
++        const xv_s16 r4 = vec_ld(64, block), r5 = vec_ld(80, block), r6 = vec_ld(96, block), r7 = vec_ld(112, block);
++        xv_s16 y45, y67, z45, z67;
++        XM_ROW_PASS(r4, r5, r6, r7, 0, y45, y67, z45, z67);
++        XM_COLUMN_PASS(y01, y23, y45, y67, XM_ALL, 0, q01, q23, q45, q67);
++        XM_COLUMN_PASS(z01, z23, z45, z67, XM_ALL, 1, w01, w23, w45, w67);
++    } else if (halves[15]) {
++        XM_COLUMN_PASS(y01, y23, y01, y01, XM_FOUR_AND_MISMATCH, 0, q01, q23, q45, q67);
++        XM_COLUMN_PASS(z01, z23, z01, z01, XM_FOUR_AND_MISMATCH, 1, w01, w23, w45, w67);
++    } else {
++        XM_COLUMN_PASS(y01, y23, y01, y01, XM_FOUR, 0, q01, q23, q45, q67);
++        XM_COLUMN_PASS(z01, z23, z01, z01, XM_FOUR, 1, w01, w23, w45, w67);
++    }
++    dest = xm_two_rows(dest, stride, q01, w01, add);
++    dest = xm_two_rows(dest, stride, q23, w23, add);
++    dest = xm_two_rows(dest, stride, q45, w45, add);
++    xm_two_rows(dest, stride, q67, w67, add);
++}
++
++void ff_xenon_idct_add(uint8_t *dest, ptrdiff_t stride, int16_t *block);   /* ppc/idctdsp.c */
++void ff_xenon_idct_put(uint8_t *dest, ptrdiff_t stride, int16_t *block);
++
++#endif
 diff --git a/libavcodec/ppc/mpegvideo_altivec.c b/libavcodec/ppc/mpegvideo_altivec.c
 index bcb59ba..11d2785 100644
 --- a/libavcodec/ppc/mpegvideo_altivec.c
@@ -1554,3 +2520,39 @@ index a7ab5a6..263ea7a 100644
      do {
          __asm__ volatile ("dcbt 0,%0" : : "r" (p));
          p += stride;
+diff --git a/libavcodec/xenon_mpeg.h b/libavcodec/xenon_mpeg.h
+new file mode 100644
+index 0000000..f5058b1
+--- /dev/null
++++ b/libavcodec/xenon_mpeg.h
+@@ -0,0 +1,30 @@
++/* moonlight-xbox360: what the MPEG-2 decoder's slice threads spend where, for dev/bench's tune passes.
++ * Part of FFmpeg, under its license (LGPL 2.1 or later); patches/ffmpeg-xenon-vmx128.patch. */
++
++#ifndef AVCODEC_XENON_MPEG_H
++#define AVCODEC_XENON_MPEG_H
++
++#include <stdint.h>
++#include "config.h"
++
++/* Ticks of the timebase, and counts. A slice context's row is its first macroblock row, so no two threads share
++ * one. Blocks by kind: only a DC coefficient; that and the last coefficient MPEG-2's mismatch control toggles;
++ * then by the last coefficient's place in scan order, up to 2, 9, 20, and beyond. */
++enum { XMPROF_PARSE, XMPROF_MC, XMPROF_IDCT, XMPROF_TOTAL, XMPROF_MID, XMPROF_MBS, XMPROF_SKIPPED, XMPROF_INTRA,
++       XMPROF_NO_RESIDUAL, XMPROF_ZERO_MV, XMPROF_HPEL, XMPROF_BLOCKS = XMPROF_HPEL + 4, XMPROF_BLOCK_KIND,
++       XMPROF_N = 32 };
++enum { XMPROF_ROWS = 128 };
++
++extern int ff_xenon_prof, ff_xenon_tune;   /* h264dec.h */
++extern uint64_t ff_xenon_mpeg_prof[XMPROF_ROWS][XMPROF_N];
++
++static inline uint64_t ff_xenon_mpeg_ticks(void)
++{
++#if ARCH_PPC
++    return __builtin_ppc_get_timebase();
++#else
++    return 0;
++#endif
++}
++
++#endif

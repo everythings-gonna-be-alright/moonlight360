@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.1
+
+- **MPEG-2 decodes about 30% faster,** to the same picture: its block copies and its transform now run in vector code written for the console's processor. A 1080p frame of the heaviest test clip takes 10.0 ms, down from 15.1.
+
 ## v0.4.0
 
 - **A new look, Fresh,** the default: covers first, sections in Settings, a centred stream menu, a short startup animation. The old look stays as Classic (*Settings → Look*).

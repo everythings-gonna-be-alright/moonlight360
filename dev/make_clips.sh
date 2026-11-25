@@ -50,6 +50,7 @@ mpeg2() {   # name, kbit/s
         -f mpeg2video "dev/bench/data/$1.m2v"
     echo "dev/bench/data/$1.m2v"
 }
+mpeg2 clip1080_mpeg2_5000 5000
 mpeg2 clip1080_mpeg2_12500 12500
 mpeg2 clip1080_mpeg2 25000
 

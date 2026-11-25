@@ -423,6 +423,17 @@ static Autotest parse_autotest(Config *c)
     c->packet_size = arg_int(args, "packet", c->packet_size);
     c->slices = arg_int(args, "slices", c->slices);
     c->codec = arg_int(args, "mpeg2", c->codec == CODEC_MPEG2) ? CODEC_MPEG2 : CODEC_H264;
+    {
+        /* The decoder's speed-ups by bit (patches/ffmpeg-xenon-vmx128.patch, h264dec.h), for a before and after on
+         * a real stream: mpeg2fast=0 takes MPEG-2's three off, tune=N sets them all. */
+        extern int ff_xenon_tune;
+        if (!arg_int(args, "mpeg2fast", 1))
+            ff_xenon_tune &= ~(1024 | 2048 | 4096);
+        ff_xenon_tune = arg_int(args, "tune", ff_xenon_tune);
+        if (strstr(args, "mpeg2fast") || strstr(args, "tune"))
+            printf("[I] dev: decoder speed-ups 0x%x (MPEG-2's vector code %s)\n", (unsigned)ff_xenon_tune,
+                   (ff_xenon_tune & (1024 | 2048 | 4096)) == (1024 | 2048 | 4096) ? "on" : "OFF");
+    }
     c->bitrate_kbps = arg_int(args, "bitrate", c->bitrate_kbps);
     for (const char *p = strstr(args, "ladder="); p && t.stage_count < 12;) {
         p = t.stage_count ? p + 1 : p + 7;

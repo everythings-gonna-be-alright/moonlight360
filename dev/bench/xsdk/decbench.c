@@ -27,7 +27,7 @@ extern const uint8_t cabac22_start[], cabac22_end[], cavlc22_start[], cavlc22_en
 extern const uint8_t cavlc12s24_start[], cavlc12s24_end[], lean12s6_start[], lean12s6_end[], lean12s24_start[],
     lean12s24_end[], lean22s24_start[], lean22s24_end[], nvlean12s24_start[], nvlean12s24_end[], mpeg2_13_start[],
     mpeg2_13_end[], mpeg2_26_start[], mpeg2_26_end[], mid12s24_start[], mid12s24_end[], mid22s24_start[],
-    mid22s24_end[];
+    mid22s24_end[], mpeg2_5_start[], mpeg2_5_end[];
 #endif
 
 /* The clips: one scene, 60 frames of 1080p30 with 6 slices, at three bitrates; each one's checksums decoded by FFmpeg
@@ -67,6 +67,8 @@ static const Clip clips[] = {
      * sw_tune = fastdecode,zerolatency). */
     { "mid 11.4, 24 slices", mid12s24_start, mid12s24_end, 0x795e95e9, 0x795e95e9, 0x795e95e9 },
     { "mid 22.4, 24 slices", mid22s24_start, mid22s24_end, 0xcc3d2faa, 0xcc3d2faa, 0xcc3d2faa },
+    /* MPEG-2 at the bits a frame of a 10 Mbit/s stream at 60 fps. */
+    { "MPEG-2  5.6 Mbps", mpeg2_5_start, mpeg2_5_end, 0xf057eec0, 0xf057eec0, 0xf057eec0, true },
 #endif
 };
 
@@ -168,6 +170,7 @@ void *__wrap___xsdk_heap_map(size_t size_bytes)
 /* The app's layout since 2026-11-25: rows 2304 and 1280 bytes apart, the third plane a page into its memory. */
 #define APP_NOW .pitch = 2304, .chroma_pitch = 1280, .cr_offset = 4096
 /* The decoder as the app runs it (ff_xenon_tune's default), against FFmpeg's stock paths in FFmpeg's own buffers. */
+/* H.264's part of it: the MPEG-2 passes below switch MPEG-2's three on one after another. */
 #define NOW 8 | 32 | 64 | 128 | 768
 static const Pass tune_passes[] = {
     { "PROFILE, 1 thr, as the app", LEAN12, ONE, .prof = true, .tune = NOW, APP_NOW },
@@ -183,6 +186,27 @@ static const Pass tune_passes[] = {
     { "stock", NORMAL24, SIX }, { "as the app", NORMAL24, SIX, .tune = NOW, APP_NOW },
     { "as the app, skip deblock", NORMAL24, ALL_HW_SKIP, .queue = 24, .tune = NOW, APP_NOW },
 };
+
+/* "tune mpeg2" runs these: MPEG-2 at three bitrates, with the decoder timing its own parts (libavcodec/xenon_mpeg.h)
+ * and its steps of 2026-11-25 switched on one after another (ff_xenon_tune's bits 1024, 2048 and 4096). */
+#define M5 14
+#define M13 10
+#define M26 11
+#define COPIES 1024
+#define SHORTCUT 2048   /* a block of one coefficient without the transform */
+#define TRANSFORM 4096  /* the transform in vector floats */
+#define MPEG2_CLIP(n) \
+    { "PROFILE, 1 thr, vector copies", n, ONE, .prof = true, .tune = NOW | COPIES, APP_NOW }, \
+    { "PROFILE, 1 thr, + shortcut", n, ONE, .prof = true, .tune = NOW | COPIES | SHORTCUT, APP_NOW }, \
+    { "PROFILE, 1 thr, + transform", n, ONE, .prof = true, .tune = NOW | COPIES | TRANSFORM, APP_NOW }, \
+    { "PROFILE, 1 thr, + both", n, ONE, .prof = true, .tune = NOW | COPIES | SHORTCUT | TRANSFORM, APP_NOW }, \
+    { "C copies (before)", n, SIX, .tune = NOW, APP_NOW }, \
+    { "vector copies", n, SIX, .tune = NOW | COPIES, APP_NOW }, \
+    { "+ shortcut", n, SIX, .tune = NOW | COPIES | SHORTCUT, APP_NOW }, \
+    { "+ transform", n, SIX, .tune = NOW | COPIES | TRANSFORM, APP_NOW }, \
+    { "+ both", n, SIX, .tune = NOW | COPIES | SHORTCUT | TRANSFORM, APP_NOW }, \
+    { "PROFILE, 6 thr, + both", n, SIX, .prof = true, .tune = NOW | COPIES | SHORTCUT | TRANSFORM, APP_NOW }
+static const Pass mpeg2_passes[] = { MPEG2_CLIP(M5), MPEG2_CLIP(M13), MPEG2_CLIP(M26) };
 
 /* What memory alone costs a frame of whole-pixel motion compensation: every macroblock of a 1080p frame copied from
  * one picture to another as the decoder does it (16 rows of 16 luma bytes, 8 rows of 8 for each chroma plane, in
@@ -284,6 +308,40 @@ extern int ff_xenon_prof, ff_xenon_tune;
 extern uint64_t ff_xenon_prof_slice[64][XPROF_SLICE_N];
 extern uint64_t ff_xenon_prof_main[XPROF_MAIN_N];
 static double ticks_a_ms;   /* the timebase's rate, measured in main */
+
+/* libavcodec/xenon_mpeg.h */
+enum { XMPROF_PARSE, XMPROF_MC, XMPROF_IDCT, XMPROF_TOTAL, XMPROF_MID, XMPROF_MBS, XMPROF_SKIPPED, XMPROF_INTRA,
+       XMPROF_NO_RESIDUAL, XMPROF_ZERO_MV, XMPROF_HPEL, XMPROF_BLOCKS = XMPROF_HPEL + 4, XMPROF_BLOCK_KIND,
+       XMPROF_N = 32 };
+extern uint64_t ff_xenon_mpeg_prof[128][XMPROF_N];
+
+static void print_mpeg2_profile(int frames_decoded, double ms_a_frame)
+{
+    double t[XMPROF_N] = { 0 };
+    const double frames = frames_decoded > 0 ? frames_decoded : 1;
+    for (int row = 0; row < 128; row++)
+        for (int k = 0; k < XMPROF_N; k++)
+            t[k] += (double)ff_xenon_mpeg_prof[row][k] / frames;
+    const double ms = 1.0 / ticks_a_ms, cyc = 3200000.0 / ticks_a_ms;
+    const double coded = t[XMPROF_MBS] - t[XMPROF_SKIPPED], inter = t[XMPROF_MBS] - t[XMPROF_INTRA];
+    printf("    slices, ms of thread time a frame: %.2f = reading the bitstream %.2f + motion %.2f + residual %.2f + "
+           "the rest %.2f; %.2f threads' worth of the frame's time\n",
+           t[XMPROF_TOTAL] * ms, t[XMPROF_PARSE] * ms, t[XMPROF_MC] * ms, t[XMPROF_IDCT] * ms,
+           (t[XMPROF_TOTAL] - t[XMPROF_PARSE] - t[XMPROF_MC] - t[XMPROF_IDCT]) * ms,
+           ms_a_frame > 0 ? t[XMPROF_TOTAL] * ms / ms_a_frame : 0);
+    printf("    a frame's %.0f MBs: %.0f skipped, %.0f intra, %.0f coded inter (%.0f of them with no residual); %.0f "
+           "not moved; whole-pixel %.0f, half across %.0f, half down %.0f, both %.0f\n",
+           t[XMPROF_MBS], t[XMPROF_SKIPPED], t[XMPROF_INTRA], coded - t[XMPROF_INTRA],
+           t[XMPROF_NO_RESIDUAL] - t[XMPROF_SKIPPED], t[XMPROF_ZERO_MV], t[XMPROF_HPEL], t[XMPROF_HPEL + 1],
+           t[XMPROF_HPEL + 2], t[XMPROF_HPEL + 3]);
+    printf("    a frame's %.0f blocks: %.0f DC alone, %.0f DC and the mismatch bit, %.0f reaching up to 3 coefficients, "
+           "%.0f up to 10, %.0f up to 21, %.0f further\n",
+           t[XMPROF_BLOCKS], t[XMPROF_BLOCK_KIND], t[XMPROF_BLOCK_KIND + 1], t[XMPROF_BLOCK_KIND + 2],
+           t[XMPROF_BLOCK_KIND + 3], t[XMPROF_BLOCK_KIND + 4], t[XMPROF_BLOCK_KIND + 5]);
+    printf("    cycles: bitstream %.0f a coded MB; motion %.0f an inter MB; residual %.0f a block\n",
+           t[XMPROF_PARSE] * cyc / (coded > 0 ? coded : 1), t[XMPROF_MC] * cyc / (inter > 0 ? inter : 1),
+           t[XMPROF_IDCT] * cyc / (t[XMPROF_BLOCKS] > 0 ? t[XMPROF_BLOCKS] : 1));
+}
 
 static void print_profile(void)
 {
@@ -518,6 +576,7 @@ static void run(const Pass *pass)
     large_page_blocks = large_page_failures = 0;
     memset(ff_xenon_prof_slice, 0, sizeof ff_xenon_prof_slice);
     memset(ff_xenon_prof_main, 0, sizeof ff_xenon_prof_main);
+    memset(ff_xenon_mpeg_prof, 0, sizeof ff_xenon_mpeg_prof);
     ff_xenon_prof = pass->prof;
 #endif
     if (avcodec_open2(ctx, codec, NULL) < 0) {
@@ -594,7 +653,9 @@ static void run(const Pass *pass)
     if (pass->large_pages)
         printf("    %u blocks on 64 KB pages, %u refused; a frame's planes at %p %p %p\n", large_page_blocks,
                large_page_failures, kept_planes[0], kept_planes[1], kept_planes[2]);
-    if (pass->prof)
+    if (pass->prof && clip->mpeg2)
+        print_mpeg2_profile(frames, avg);
+    else if (pass->prof)
         print_profile();
     ff_xenon_prof = ff_xenon_tune = 0;
     large_pages = false;
@@ -693,6 +754,149 @@ COST_LOOP(cost_srawi_addze, "srawi %[t],%[acc],1\naddze %[t],%[t]")
 COST_LOOP(cost_branch_taken, "cmpwi 7,%[k],3\nbeq 7,2f\nnop\n2:")
 COST_LOOP(cost_branch_flip, "andi. %[t],%[acc],1\nbeq 2f\nnop\n2:\nli %[t],1")
 
+/* The vector float instructions the MPEG-2 transform is made of (libavcodec/ppc/mpeg_xenon_vmx.h), eight of each a
+ * turn, independent of one another or each waiting for the last; v1 = 1.0, v2 = 0.0 and v0 starts as 5.0. */
+#define COST_LOOP_V(fn, body) \
+    static __attribute__((noinline)) uint32_t fn(uint32_t n, uint32_t *mem, uint32_t k) \
+    { \
+        uint32_t acc = 1, t = 0; \
+        __asm__ volatile("vspltisw 1,1\nvcfsx 1,1,0\nvspltisw 2,0\nvspltisw 0,5\nvcfsx 0,0,0\nmtctr %[n]\n1:\n" \
+                         body "\nadd %[acc],%[acc],%[t]\nbdnz 1b" \
+                         : [acc] "+b"(acc), [t] "+b"(t) \
+                         : [n] "b"(n), [mem] "b"(mem), [k] "b"(k) \
+                         : "ctr", "cr0", "xer", "memory", "lr", "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", \
+                           "v9", "v10"); \
+        return acc; \
+    }
+#define EIGHT(a, b, c, d, e, f, g, h) a "\n" b "\n" c "\n" d "\n" e "\n" f "\n" g "\n" h
+#define SAME8(x) EIGHT(x, x, x, x, x, x, x, x)
+COST_LOOP_V(cost_v_none, "nop")
+COST_LOOP_V(cost_vmaddfp_apart, EIGHT("vmaddfp 3,0,1,2", "vmaddfp 4,0,1,2", "vmaddfp 5,0,1,2", "vmaddfp 6,0,1,2",
+                                      "vmaddfp 7,0,1,2", "vmaddfp 8,0,1,2", "vmaddfp 9,0,1,2", "vmaddfp 10,0,1,2"))
+COST_LOOP_V(cost_vmaddfp_chain, SAME8("vmaddfp 0,0,1,2"))
+COST_LOOP_V(cost_vnmsubfp_apart, EIGHT("vnmsubfp 3,0,1,2", "vnmsubfp 4,0,1,2", "vnmsubfp 5,0,1,2", "vnmsubfp 6,0,1,2",
+                                       "vnmsubfp 7,0,1,2", "vnmsubfp 8,0,1,2", "vnmsubfp 9,0,1,2", "vnmsubfp 10,0,1,2"))
+COST_LOOP_V(cost_vcfsx_apart, EIGHT("vcfsx 3,2,0", "vcfsx 4,2,0", "vcfsx 5,2,0", "vcfsx 6,2,0", "vcfsx 7,2,0",
+                                    "vcfsx 8,2,0", "vcfsx 9,2,0", "vcfsx 10,2,0"))
+COST_LOOP_V(cost_vctsxs_apart, EIGHT("vctsxs 3,0,0", "vctsxs 4,0,0", "vctsxs 5,0,8", "vctsxs 6,0,8", "vctsxs 7,0,0",
+                                     "vctsxs 8,0,0", "vctsxs 9,0,8", "vctsxs 10,0,8"))
+COST_LOOP_V(cost_convert_chain, "vctsxs 3,0,0\nvcfsx 3,3,0\nvctsxs 3,3,0\nvcfsx 3,3,0\nvctsxs 3,3,0\nvcfsx 3,3,0\n"
+                                "vctsxs 3,3,0\nvcfsx 3,3,0")
+COST_LOOP_V(cost_vadduwm8, EIGHT("vadduwm 3,2,2", "vadduwm 4,2,2", "vadduwm 5,2,2", "vadduwm 6,2,2", "vadduwm 7,2,2",
+                                 "vadduwm 8,2,2", "vadduwm 9,2,2", "vadduwm 10,2,2"))
+COST_LOOP_V(cost_vadduwm_chain, SAME8("vadduwm 3,3,2"))
+COST_LOOP_V(cost_vsraw8, EIGHT("vsraw 3,2,2", "vsraw 4,2,2", "vsraw 5,2,2", "vsraw 6,2,2", "vsraw 7,2,2",
+                               "vsraw 8,2,2", "vsraw 9,2,2", "vsraw 10,2,2"))
+COST_LOOP_V(cost_vand8, EIGHT("vand 3,2,2", "vand 4,2,2", "vand 5,2,2", "vand 6,2,2", "vand 7,2,2", "vand 8,2,2",
+                              "vand 9,2,2", "vand 10,2,2"))
+COST_LOOP_V(cost_vupkhsh8, EIGHT("vupkhsh 3,2", "vupklsh 4,2", "vupkhsh 5,2", "vupklsh 6,2", "vupkhsh 7,2",
+                                 "vupklsh 8,2", "vupkhsh 9,2", "vupklsh 10,2"))
+COST_LOOP_V(cost_vpk8, EIGHT("vpkuwum 3,2,2", "vpkswss 4,2,2", "vpkuwum 5,2,2", "vpkswss 6,2,2", "vpkshus 7,2,2",
+                             "vpkshus 8,2,2", "vpkuwum 9,2,2", "vpkswss 10,2,2"))
+COST_LOOP_V(cost_vmrg8, EIGHT("vmrghh 3,2,2", "vmrglh 4,2,2", "vmrghw 5,2,2", "vmrglw 6,2,2", "vmrghh 7,2,2",
+                              "vmrglh 8,2,2", "vmrghw 9,2,2", "vmrglw 10,2,2"))
+COST_LOOP_V(cost_vperm8, EIGHT("vperm 3,2,2,2", "vperm 4,2,2,2", "vperm 5,2,2,2", "vperm 6,2,2,2", "vperm 7,2,2,2",
+                               "vperm 8,2,2,2", "vperm 9,2,2,2", "vperm 10,2,2,2"))
+COST_LOOP_V(cost_vsel8, EIGHT("vsel 3,2,2,2", "vcmpequw 4,2,2", "vsel 5,2,2,2", "vcmpequw 6,2,2", "vsel 7,2,2,2",
+                              "vcmpequw 8,2,2", "vsel 9,2,2,2", "vcmpequw 10,2,2"))
+COST_LOOP_V(cost_vsplt8, EIGHT("vspltisw 3,8", "vspltisw 4,14", "vspltisw 5,8", "vspltisw 6,14", "vspltisw 7,8",
+                               "vspltisw 8,14", "vspltisw 9,8", "vspltisw 10,14"))
+COST_LOOP_V(cost_mixed, "vcfsx 3,2,0\nvmaddfp 4,3,1,2\nvctsxs 5,4,0\nvadduwm 6,5,2\nvcfsx 7,6,0\nvmaddfp 8,7,1,2\n"
+                        "vctsxs 9,8,0\nvadduwm 10,9,2")
+
+void ff_simple_idct_add_int16_8bit(uint8_t *dest, ptrdiff_t line_size, int16_t *block);
+void ff_xenon_idct_add(uint8_t *dest, ptrdiff_t stride, int16_t *block);
+int ff_xenon_dc_add(uint8_t *dest, ptrdiff_t stride, const int16_t *block);
+
+/* What the MPEG-2 transform's instructions cost, and the transform itself on blocks of four kinds: FFmpeg's in C,
+ * the vector one, and the one-coefficient shortcut; everything in the cache. */
+static void mpeg2_costs(void)
+{
+    static uint32_t memory[64] __attribute__((aligned(128)));
+    static const struct {
+        const char *name;
+        uint32_t (*fn)(uint32_t, uint32_t *, uint32_t);
+    } loops[] = {
+        { "nothing (the loop itself)", cost_v_none },
+        { "8 vmaddfp, apart", cost_vmaddfp_apart },
+        { "8 vmaddfp, a chain", cost_vmaddfp_chain },
+        { "8 vnmsubfp, apart", cost_vnmsubfp_apart },
+        { "8 vcfsx, apart", cost_vcfsx_apart },
+        { "8 vctsxs, apart", cost_vctsxs_apart },
+        { "4 vctsxs + 4 vcfsx, a chain", cost_convert_chain },
+        { "8 vadduwm, apart", cost_vadduwm8 },
+        { "8 vadduwm, a chain", cost_vadduwm_chain },
+        { "8 vsraw", cost_vsraw8 },
+        { "8 vand", cost_vand8 },
+        { "8 vupkhsh/vupklsh", cost_vupkhsh8 },
+        { "8 packs (vpkuwum, vpkswss, vpkshus)", cost_vpk8 },
+        { "8 merges", cost_vmrg8 },
+        { "8 vperm", cost_vperm8 },
+        { "4 vsel + 4 vcmpequw", cost_vsel8 },
+        { "8 vspltisw", cost_vsplt8 },
+        { "convert, multiply, convert, add: twice, a chain", cost_mixed },
+    };
+    enum { N = 4000000 };
+    xsdk_thread_move(2);
+    printf("Vector instructions of the MPEG-2 transform, in a loop of %d (cycles a turn):\n", N);
+    double base = 0;
+    for (unsigned i = 0; i < sizeof loops / sizeof loops[0]; i++) {
+        loops[i].fn(N / 10, memory, 3);
+        const uint64_t t0 = now_us();
+        const uint32_t result = loops[i].fn(N, memory, 3);
+        const double cycles = (double)(now_us() - t0) * 3200.0 / N;
+        if (!i)
+            base = cycles;
+        printf("  %-48s %6.1f (%+6.1f on the empty loop)  [%08x]\n", loops[i].name, cycles, cycles - base,
+               (unsigned)result);
+    }
+
+    static int16_t blocks[64][64] __attribute__((aligned(128)));
+    static uint8_t pixels[8 * 32] __attribute__((aligned(128)));
+    static const char *const kinds[] = { "every coefficient set", "rows 0 to 3 set, and the mismatch bit",
+                                         "3 coefficients in the top left corner", "DC and the mismatch bit" };
+    enum { ROUNDS = 3000 };
+    for (int kind = 0; kind < 4; kind++) {
+        double cycles[3] = { 0 };
+        for (int which = 0; which < 3; which++) {
+            if (which == 2 && kind != 3)
+                continue;
+            uint64_t ticks = 0;
+            uint32_t seed = 360;
+            for (int round = 0; round < ROUNDS; round++) {
+                /* 64 fresh blocks a round, as the C transform works in place; filled outside the timing. */
+                memset(blocks, 0, sizeof blocks);
+                for (int b = 0; b < 64; b++)
+                    for (int i = 0; i < 64; i++) {
+                        seed = seed * 1664525u + 1013904223u;
+                        const int v = (int)(seed >> 20) % 61 - 30;
+                        const bool set = kind == 0 || (kind == 1 && (i < 32 || i == 63)) ||
+                                         (kind == 2 && (i == 0 || i == 1 || i == 8)) || (kind == 3 && (i == 0 || i == 63));
+                        blocks[b][i] = !set ? 0 : i == 63 && kind ? 1 : v ? v : 1;
+                    }
+                memset(pixels, 128, sizeof pixels);
+                const uint64_t t0 = __builtin_ppc_get_timebase();
+                for (int b = 0; b < 64; b++) {
+                    if (which == 0)
+                        ff_simple_idct_add_int16_8bit(pixels + (b & 1) * 8, 32, blocks[b]);
+                    else if (which == 1)
+                        ff_xenon_idct_add(pixels + (b & 1) * 8, 32, blocks[b]);
+                    else
+                        ff_xenon_dc_add(pixels + (b & 1) * 8, 32, blocks[b]);
+                }
+                ticks += __builtin_ppc_get_timebase() - t0;
+            }
+            cycles[which] = (double)ticks / ticks_a_ms * 3200000.0 / (ROUNDS * 64.0);
+        }
+        printf("  a block with %-40s C %5.0f cycles, vector %5.0f", kinds[kind], cycles[0], cycles[1]);
+        if (kind == 3)
+            printf(", shortcut %5.0f", cycles[2]);
+        printf("\n");
+    }
+    printf("\n");
+    fflush(stdout);
+}
+
 static void instruction_costs(void)
 {
     static uint32_t memory[64] __attribute__((aligned(128)));
@@ -780,8 +984,14 @@ int main(void)
         instruction_costs();
         if (strstr(devreturn_args(), "memory"))
             memory_tests();
-        for (unsigned i = 0; i < sizeof tune_passes / sizeof tune_passes[0]; i++)
-            run(&tune_passes[i]);
+        if (strstr(devreturn_args(), "mpeg2"))
+            mpeg2_costs();
+        if (strstr(devreturn_args(), "mpeg2"))
+            for (unsigned i = 0; i < sizeof mpeg2_passes / sizeof mpeg2_passes[0]; i++)
+                run(&mpeg2_passes[i]);
+        else
+            for (unsigned i = 0; i < sizeof tune_passes / sizeof tune_passes[0]; i++)
+                run(&tune_passes[i]);
         printf("\ndecbench tune done\n");
         fflush(stdout);
         devreturn();

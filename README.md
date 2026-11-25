@@ -83,6 +83,7 @@ Keep the hardware encoder, with *Prefer CAVLC over CABAC* on:
 
 | Stream | On the PC | *Skip deblocking* | at 30 fps | at 60 fps |
 |---|---|---|---:|---:|
+| 🏆 **MPEG-2** | Sunshine with `mpeg2_mode = 2` | not in this codec | 10 ms | **7 ms** |
 | 🪶 **Lean** | Encoder **Software**, preset **ultrafast** | off | 17 ms | **12 ms** |
 | Hardware encoder | *Prefer CAVLC over CABAC* | on | 20 ms | 15 ms |
 | Hardware encoder | *Prefer CAVLC over CABAC* | off | 30 ms | 23 ms |
@@ -90,7 +91,9 @@ Keep the hardware encoder, with *Prefer CAVLC over CABAC* on:
 ### Under the hood
 
 - FFmpeg decodes on all six hardware threads.
-- Its vector code is patched for the 360's CPU (`patches/ffmpeg-xenon-vmx128.patch`).
+- Its vector code is patched for the 360's CPU (`patches/ffmpeg-xenon-vmx128.patch`), which lacks the vector
+  integer multiplies FFmpeg's own code relies on. MPEG-2's transform is done in vector floats instead, to the same
+  pixels.
 - Each frame comes as 24 slices, shared between the threads.
 
 ## 🛠️ Building
