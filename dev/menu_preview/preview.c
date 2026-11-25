@@ -1303,7 +1303,7 @@ int main(int argc, char **argv)
         menu_open(&c, "moonlight.ini");
         int frame = 0, written = 0;
         /* Act one: the startup (the moon, the crescent, the name), Play, the recent apps, Settings: Quality with its
-         * latency estimate, Look's Play picture set to the moon and back; then Start streaming. */
+         * latency estimate, Look's Play picture set to the moon; then, from Play, Start streaming. */
         static const TourStep menus[] = {
             { 0, 100 },                                                     /* the startup, then Play */
             { 0, 50 },
@@ -1322,10 +1322,7 @@ int main(int argc, char **argv)
             { INPUT_GAMEPAD_DPAD_DOWN, 22 },
             { INPUT_GAMEPAD_A, 14 }, { INPUT_GAMEPAD_DPAD_DOWN, 22 },       /* Look: Play picture */
             { INPUT_GAMEPAD_DPAD_RIGHT, 26 },                               /* the moon */
-            { INPUT_GAMEPAD_LEFT_SHOULDER, 80 },                            /* Play, with the moon and its sky */
-            { INPUT_GAMEPAD_RIGHT_SHOULDER, 16 }, { INPUT_GAMEPAD_A, 12 },  /* back to the cover */
-            { INPUT_GAMEPAD_DPAD_RIGHT, 20 },
-            { INPUT_GAMEPAD_LEFT_SHOULDER, 44 },                            /* Play */
+            { INPUT_GAMEPAD_LEFT_SHOULDER, 100 },                           /* Play, with the moon and its sky */
             { INPUT_GAMEPAD_A, 28 },                                        /* Start streaming */
         };
         tour_fresh_menu(dir, menus, sizeof menus / sizeof menus[0], &frame, &written);
