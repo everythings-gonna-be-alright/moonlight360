@@ -696,14 +696,13 @@ static void f_value_text(int item, char *out, size_t size, bool *warn)
             snprintf(out, size, "%dx%d", config->width, config->height);
         else
             snprintf(out, size, "%dp", config->height);
-        *warn = config->height > 900 && config->fps > 30;
+        *warn = config->height > 900 && config->fps > 30 && config->codec != CODEC_MPEG2;
         break;
     }
     case ITEM_FPS: snprintf(out, size, "%d fps", config->fps); break;
     case ITEM_BITRATE: snprintf(out, size, "%d Mbps", config->bitrate_kbps / 1000); break;
     case ITEM_CODEC:
-        snprintf(out, size, "%s", config->codec == CODEC_MPEG2 ? "MPEG-2 (beta)" : "H.264");
-        *warn = config->codec == CODEC_MPEG2;
+        snprintf(out, size, "%s", config->codec == CODEC_MPEG2 ? "MPEG-2 \xC2\xB7 best quality" : "H.264");
         break;
     case ITEM_STATS: {
         static const char *const names[STATS_MODES] = { "Off", "Compact", "Detailed" };
@@ -875,7 +874,8 @@ static void f_settings(void)
             char value[64];
             bool warn;
             f_value_text(item, value, sizeof value, &warn);
-            const uint32_t ink = warn ? THEME_WARN : on ? F_TEXT : F_TEXT_2;
+            const bool best = item == ITEM_CODEC && config->codec == CODEC_MPEG2;   /* the console's best: green */
+            const uint32_t ink = warn ? THEME_WARN : best ? F_GOOD : on ? F_TEXT : F_TEXT_2;
             int32_t vr = right;
             if (item == ITEM_HOST) {
                 gfx_text_right(vr, ty, 1, on ? F_TEXT : F_TEXT_3, "\xE2\x80\xBA");   /* U+203A */

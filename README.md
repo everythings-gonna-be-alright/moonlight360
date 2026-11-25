@@ -16,17 +16,14 @@ open-source [xsdk](https://github.com/xenosworks/xsdk): no Microsoft XDK involve
 
 ## ✨ Features
 
-- Pair, pick an app, play. Launch, resume and quit games on the PC.
-- H.264 video from 360p to 1080p, at 30 or 60 fps. Opus stereo audio. Controllers 1–4 with rumble.
-- A true 1080p picture on a 1080p TV, not 720p scaled up by the console; a 720p TV gets 720p. Automatic.
-- A stats HUD: frame rate, latency by stage, ping, packet loss, CPU and GPU load and temperatures. 🥵
-- Low-latency display, and controllers read 500 times a second.
-- Mouse and keyboard from the controller: a mouse mode, typing with the on-screen keyboard, and keys like Esc,
-  Alt + Tab and Guide, in the stream menu's *Mouse and keyboard*.
-- Finds your PC on the network, shows app covers, and keeps your recent apps one press away.
-- An estimate of the latency, PC to TV, for the settings you choose.
-- Wake-on-LAN, reconnect on start, and four colour themes.
-- A menu made for a controller and a TV, in two looks: Fresh (covers first) and Classic (the night sky).
+- 🏆 **MPEG-2 streaming:** the format the Xbox 360 decodes best. 1080p at 60 fps with the best performance and
+  picture. H.264 too.
+- 📺 **True 1080p60** on a 1080p TV, not 720p scaled up.
+- ⚡ **Low latency:** about 40 ms from PC to TV, and an estimate for the settings you pick.
+- 🖱️ **Mouse and keyboard** from the controller, for the PC's desktop and launchers.
+- 🔎 **Finds your PC** on the network, wakes it (Wake-on-LAN), shows game covers and your recent games.
+- 📊 **Stats HUD:** frame rate, latency, packet loss, CPU and GPU load.
+- 🎮 **Made for a TV and a controller,** in two looks: Fresh and Classic.
 
 Not supported: HEVC, AV1 and HDR. The console is older than all three.
 
@@ -50,13 +47,24 @@ Settings are saved to `moonlight.ini` next to the `.xex`. If something goes wron
 ## ⚡ Best settings and performance
 
 > [!WARNING]
-> **On Wi-Fi, prefer a cable.** The console's Wi-Fi adapter can stop receiving until a reboot. Two triggers are
-> known and avoided on Wi-Fi: rumble passed to the controllers (none on Wi-Fi) and short audio packets (always
-> 20 ms on Wi-Fi). It carries about 25 Mbit/s, so keep the bitrate at or under that.
+> **Use a network cable.** Over the console's Wi-Fi a stream can still freeze after a few minutes, and the console
+> then receives nothing until it's rebooted. The two known triggers are avoided on Wi-Fi (no rumble to the
+> controllers, 20 ms audio packets), yet a stream with both still froze after 5½ minutes, so the cause isn't fully
+> found. On a cable it's solid: 1080p at 60 fps and 50 Mbit/s ran 13½ minutes with nothing lost. If Wi-Fi is the
+> only option, keep the bitrate at 25 Mbit/s or less, about what the console's Wi-Fi carries.
 
-### Recommended
+### Recommended for 1080p: MPEG-2 🏆
 
-**1080p · 60 fps · 30 Mbit/s, with a lean stream.** 🪶
+**1080p · 60 fps with the MPEG-2 codec: the best performance and image quality.** MPEG-2 is far lighter for the
+console to decode than H.264, so nothing has to be left out to keep up.
+
+- **On the PC:** a recent Sunshine, with MPEG-2 on (`mpeg2_mode = 2` in its configuration).
+- **On the console:** *Settings* → *Quality*: **1920×1080**, **60 fps**, *Video codec* → **MPEG-2**.
+- **On Wi-Fi** keep the bitrate at 25 Mbit/s or less.
+
+### With H.264: a lean stream 🪶
+
+**1080p · 60 fps · 30 Mbit/s, with a lean stream,** for a host without MPEG-2.
 
 - **Measured:** a six-minute stream averaged 59 fps, with 40 ms from the PC to the screen.
 - **Trade-off:** the PC's processor does the encoding, and the picture is a little blockier.
@@ -91,11 +99,6 @@ Keep the hardware encoder, with *Prefer CAVLC over CABAC* on:
 | 🪶 **Lean** | Encoder **Software**, preset **ultrafast** | off | 17 ms | **12 ms** |
 | Hardware encoder | *Prefer CAVLC over CABAC* | on | 20 ms | 15 ms |
 | Hardware encoder | *Prefer CAVLC over CABAC* | off | 30 ms | 23 ms |
-
-### Experimental
-
-- 🧪 **MPEG-2** (*Settings* → *Quality* → *Video codec*): needs Sunshine with `mpeg2_mode = 2`; untested on a real
-  host.
 
 ### Under the hood
 

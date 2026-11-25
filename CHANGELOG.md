@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.1
+
+- **MPEG-2 is the recommended codec for 1080p:** the best the console does, in performance and picture. *Video codec* now shows **MPEG-2 · best quality** in green; the "experimental" warning is gone, and so are the lean-stream and Skip deblocking notices, which don't apply to it.
+- **Wi-Fi, corrected:** v0.4.0 avoids the two known triggers, but a stream can still freeze on Wi-Fi after a few minutes. Use a network cable; on a cable 1080p60 at 50 Mbit/s ran 13½ minutes with nothing lost.
+- README: MPEG-2 first, a shorter feature list, the Wi-Fi warning.
+
 ## v0.4.0
 
 - **Fresh, a new look,** the default; the old one stays as Classic (Settings → Look).

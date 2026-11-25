@@ -486,6 +486,11 @@ static void fresh_shots(const char *dir)
     press(INPUT_GAMEPAD_DPAD_DOWN);
     press(INPUT_GAMEPAD_DPAD_DOWN);
     shot_settled(dir, "fresh-6b-bitrate", 20);
+    config.codec = CODEC_MPEG2;            /* Video codec: MPEG-2, the console's best */
+    press(INPUT_GAMEPAD_DPAD_DOWN);
+    shot_settled(dir, "fresh-6d-mpeg2", 20);
+    press(INPUT_GAMEPAD_DPAD_UP);
+    config.codec = CODEC_H264;
     press(INPUT_GAMEPAD_B);                /* back to the sections */
     press(INPUT_GAMEPAD_DPAD_DOWN);
     shot_settled(dir, "fresh-7-pc", 20);

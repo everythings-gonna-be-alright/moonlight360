@@ -917,15 +917,15 @@ static void item_help(int item, const char **help, const char **warning)
     case ITEM_RESOLUTION:
         *help = "The stream's size. 1080p needs the PC to send CAVLC (in Sunshine, Apollo or Vibeshine: Prefer CAVLC "
                 "over CABAC; the Software encoder's ultrafast preset is CAVLC by itself).";
-        if (config->height > 900 && config->fps > 30)
+        if (config->height > 900 && config->fps > 30 && config->codec != CODEC_MPEG2)   /* MPEG-2 keeps up anyway */
             *warning = LEAN_NOTICE;
-        else if (config->height > 900 && !config->fast_decode)
+        else if (config->height > 900 && !config->fast_decode && config->codec != CODEC_MPEG2)
             *warning = "With a hardware encoder's stream, 1080p needs Skip deblocking on (Video tab). A lean stream "
                        "(the PC's Software encoder, ultrafast preset) doesn't.";
         break;
     case ITEM_FPS:
         *help = "Frames a second. 60 needs twice the decoding: fine up to 1600x900; at 1080p it needs a lean stream.";
-        if (config->height > 900 && config->fps > 30)
+        if (config->height > 900 && config->fps > 30 && config->codec != CODEC_MPEG2)   /* MPEG-2 keeps up anyway */
             *warning = LEAN_NOTICE;
         break;
     case ITEM_BITRATE:
@@ -981,11 +981,9 @@ static void item_help(int item, const char **help, const char **warning)
                 "that finishes an easy piece takes the next one, so busy scenes decode faster. 48 is being tested.";
         break;
     case ITEM_CODEC:
-        *help = "MPEG-2 is lighter for the console to decode than H.264, but needs more bitrate for the same picture. "
-                "The PC must run Sunshine with mpeg2_mode = 2; any other host sends H.264.";
-        if (config->codec == CODEC_MPEG2)
-            *warning = "Experimental: MPEG-2 is still being tested and may not work. Choose H.264 if the stream "
-                       "fails or looks wrong.";
+        *help = "MPEG-2 is the best the console does: far lighter for it to decode than H.264, so 1080p at 60 fps "
+                "keeps up with the best picture. The PC must run a recent Sunshine with mpeg2_mode = 2; any other host "
+                "sends H.264.";
         break;
     case ITEM_DECODE:
         *help = "Test switch. Off: video is received but never decoded; the picture stays frozen.";
@@ -1163,7 +1161,8 @@ static void draw_value(int item, int32_t right, int32_t y, int32_t cy, bool sele
     case ITEM_RESOLUTION: {
         int r = resolution_index();
         snprintf(value, sizeof value, "%s", r >= 0 ? resolutions[r].name : "custom");
-        draw_choice(right, y, value, selected, config->height > 900 && config->fps > 30 ? THEME_WARN : text);
+        draw_choice(right, y, value, selected,
+                    config->height > 900 && config->fps > 30 && config->codec != CODEC_MPEG2 ? THEME_WARN : text);
         break;
     }
     case ITEM_FPS:
@@ -1269,8 +1268,8 @@ static void draw_value(int item, int32_t right, int32_t y, int32_t cy, bool sele
         draw_choice(right, y, value, selected, text);
         break;
     case ITEM_CODEC:
-        draw_choice(right, y, config->codec == CODEC_MPEG2 ? "MPEG-2 (beta)" : "H.264", selected,
-                    config->codec == CODEC_MPEG2 ? THEME_WARN : text);
+        draw_choice(right, y, config->codec == CODEC_MPEG2 ? "MPEG-2 \xC2\xB7 best quality" : "H.264", selected,
+                    config->codec == CODEC_MPEG2 ? THEME_GOOD : text);
         break;
     default:
         break;
@@ -1377,7 +1376,7 @@ static void draw_about(int32_t y)
     const int32_t x = CONTENT_X + 16;
     gfx_text(x, y, 2, THEME_TEXT, "Moonlight 360");
     gfx_text(x + gfx_text_width("Moonlight 360", 2) + 16, y + 14, 1, THEME_TEXT_3,
-             "version 0.4  \xC2\xB7  build " __DATE__ " " __TIME__);
+             "version 0.4.1  \xC2\xB7  build " __DATE__ " " __TIME__);
     y += 48;
     gfx_text(x, y, 1, THEME_TEXT_2,
              "Streams games from a PC running Sunshine, Apollo or Vibeshine to an Xbox 360 (RGH, Aurora).");
