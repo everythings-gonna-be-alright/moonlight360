@@ -1376,7 +1376,7 @@ static void draw_about(int32_t y)
     const int32_t x = CONTENT_X + 16;
     gfx_text(x, y, 2, THEME_TEXT, "Moonlight 360");
     gfx_text(x + gfx_text_width("Moonlight 360", 2) + 16, y + 14, 1, THEME_TEXT_3,
-             "version 0.4.1  \xC2\xB7  build " __DATE__ " " __TIME__);
+             "version 0.4  \xC2\xB7  build " __DATE__ " " __TIME__);
     y += 48;
     gfx_text(x, y, 1, THEME_TEXT_2,
              "Streams games from a PC running Sunshine, Apollo or Vibeshine to an Xbox 360 (RGH, Aurora).");

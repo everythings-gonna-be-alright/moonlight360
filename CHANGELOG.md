@@ -1,11 +1,5 @@
 # Changelog
 
-## v0.4.1
-
-- **MPEG-2 is the recommended codec for 1080p:** the best the console does, in performance and picture. *Video codec* now shows **MPEG-2 · best quality** in green; the "experimental" warning is gone, and so are the lean-stream and Skip deblocking notices, which don't apply to it.
-- **Wi-Fi, corrected:** v0.4.0 avoids the two known triggers, but a stream can still freeze on Wi-Fi after a few minutes. Use a network cable; on a cable 1080p60 at 50 Mbit/s ran 13½ minutes with nothing lost.
-- README: MPEG-2 first, a shorter feature list, the Wi-Fi warning.
-
 ## v0.4.0
 
 - **Fresh, a new look,** the default; the old one stays as Classic (Settings → Look).
@@ -17,7 +11,8 @@
   - **Startup:** stars, the moon rising and turning to a crescent, the name. Any button skips it.
   - Failures say what went wrong and what to do, with Try again; with no PC yet, Find your PC.
 - **Forget this PC** (Settings → PC, A held): its address, its MAC and the recent apps go.
-- **Wi-Fi:** the console's Wi-Fi adapter stopped receiving until a reboot when the controllers rumbled during a stream, or with short audio packets. On Wi-Fi the app now passes no rumble to the controllers and always asks for 20 ms audio packets; it warns past 25 Mbps, about what the console's Wi-Fi carries.
+- **MPEG-2 is the recommended codec for 1080p:** the best the console does, in performance and picture. *Video codec* shows **MPEG-2 · best quality** in green; the lean-stream and Skip deblocking notices don't show for it.
+- **Wi-Fi:** two triggers that froze the console's Wi-Fi adapter until a reboot are avoided: rumble passed to the controllers during a stream (none on Wi-Fi now) and short audio packets (always 20 ms on Wi-Fi). A stream on Wi-Fi can still freeze after a few minutes, so use a network cable; on a cable 1080p60 at 50 Mbit/s ran 13½ minutes with nothing lost. On Wi-Fi the bitrate warns past 25 Mbps.
 - **Bitrate up to 70 Mbps** (past 50 untried: the row warns).
 - **Fast decode is now Skip deblocking,** for what it does.
 - **Stats:** the frame's quantiser (QP) in the detailed view.
