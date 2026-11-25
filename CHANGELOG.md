@@ -2,22 +2,14 @@
 
 ## v0.4.0
 
-- **Fresh, a new look,** the default; the old one stays as Classic (Settings → Look).
-  - **Play:** the game A streams, big, its cover lighting the page in its colour, or the moon and its night sky (Look → Play picture); the quality line (A opens Settings → Quality); the other recent apps under it, the page following the cursor onto them; All apps; X changes the PC.
-  - **Settings:** sections at the left (Quality, PC, Controls, Sound, Look, Advanced), the rows, and the selected one explained beside them. LB and RB step through Play, Settings and About.
-  - **Quality:** an estimated latency, PC to TV, for the settings chosen (PC, network, decoding, TV), and whether decoding keeps up.
-  - **Connecting:** the five steps along a track that fills, the picture fading in instead of cutting in.
-  - **Stream menu:** in the middle; Resume, Mouse and keyboard, Stats, Leave stream, Quit (A held for a second). B, or the button that opened it, resumes.
-  - **Startup:** stars, the moon rising and turning to a crescent, the name. Any button skips it.
-  - Failures say what went wrong and what to do, with Try again; with no PC yet, Find your PC.
-- **Forget this PC** (Settings → PC, A held): its address, its MAC and the recent apps go.
-- **MPEG-2 is the recommended codec for 1080p:** the best the console does, in performance and picture. *Video codec* shows **MPEG-2 · best quality** in green; the lean-stream and Skip deblocking notices don't show for it.
-- **Wi-Fi:** two triggers that froze the console's Wi-Fi adapter until a reboot are avoided: rumble passed to the controllers during a stream (none on Wi-Fi now) and short audio packets (always 20 ms on Wi-Fi). A stream on Wi-Fi can still freeze after a few minutes, so use a network cable; on a cable 1080p60 at 50 Mbit/s ran 13½ minutes with nothing lost. On Wi-Fi the bitrate warns past 25 Mbps.
-- **Bitrate up to 70 Mbps** (past 50 untried: the row warns).
-- **Fast decode is now Skip deblocking,** for what it does.
+- **A new look, Fresh,** the default: covers first, sections in Settings, a centred stream menu, a short startup animation. The old look stays as Classic (*Settings → Look*).
+- **Latency estimate** in *Settings → Quality*: PC to TV for the settings chosen, and whether decoding keeps up.
+- **Forget this PC** (*Settings → PC*, hold A).
+- **MPEG-2 is the recommended codec for 1080p:** the best the console does, in performance and picture.
+- **Wi-Fi:** two freeze triggers avoided (rumble, short audio packets), but a stream can still freeze. Use a cable.
+- **Bitrate up to 70 Mbps.** *Fast decode* is now *Skip deblocking*.
 - **Stats:** the frame's quantiser (QP) in the detailed view.
-- **Decoding:** each frame's planes laid out so the CPU's cache holds more of them.
-- Audio packets in the order 5, 10, 20 ms.
+- **Faster decoding:** the frame's planes laid out to suit the CPU's cache.
 
 ## v0.3.0
 
