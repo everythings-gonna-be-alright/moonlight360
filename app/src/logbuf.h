@@ -15,5 +15,8 @@ void logbuf_set_logging(bool on);
 size_t logbuf_recent(char *out, size_t size);
 /* From now on lines are kept in memory. */
 void logbuf_begin(void);
+/* Writes what was kept to the file and goes on keeping lines: for when the network has died mid-stream, so the log
+ * survives the reboot that follows (and the file's USB writes can no longer be what troubles the network). */
+void logbuf_flush(void);
 /* Writes what was kept to the file; lines go straight to the file again. */
 void logbuf_end(void);

@@ -314,7 +314,7 @@ static void *flow(void *arg)
     listener.stageFailed = stage_failed;
     listener.connectionTerminated = connection_terminated;
     listener.logMessage = log_message;
-    if (config.input && config.rumble)
+    if (config.input)   /* input.c counts the commands, and passes on what main.c's limit lets through */
         listener.rumble = input_rumble;
 
     pthread_mutex_lock(&lock);
@@ -327,8 +327,12 @@ static void *flow(void *arg)
     {
         /* patches/moonlight-common-c-sdp-options.patch: 5 is Moonlight's own choice, so no override then. */
         extern int LiAudioPacketDurationOverrideMs;
-        LiAudioPacketDurationOverrideMs = config.audio_packet_ms == 5 ? 0 : config.audio_packet_ms;
-        printf("[I] session: audio packets of %d ms asked of the host; sound %s\n", config.audio_packet_ms,
+        /* On Wi-Fi always 20 ms, whatever the setting: shorter audio packets (200 a second at 5 ms) stop the console's
+         * adapter receiving until a reboot (found 2026-11-22, and again by the user on 2026-11-24). */
+        const int audio_ms = netfix_on_wifi() && config.audio_packet_ms < 20 ? 20 : config.audio_packet_ms;
+        LiAudioPacketDurationOverrideMs = audio_ms == 5 ? 0 : audio_ms;
+        printf("[I] session: audio packets of %d ms asked of the host%s; sound %s\n", audio_ms,
+               audio_ms != config.audio_packet_ms ? " (Wi-Fi: not the shorter ones set)" : "",
                config.audio_on_host ? "on the PC (the host still sends the audio stream)" : "on the console");
     }
     video_set_decode_enabled(config.decode);

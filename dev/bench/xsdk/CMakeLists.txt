@@ -26,7 +26,8 @@ set_source_files_properties(decclips.S PROPERTIES COMPILE_DEFINITIONS "${clip_de
 # The AltiVec build's extra clips: 24 slices, and streams without deblocking or sub-pixel motion (leanclips.S).
 set(LEAN_FILES CAVLC12S24=clip1080_cavlc_s24_12500 LEAN12S6=clip1080_lean_s6_12500 LEAN12S24=clip1080_lean_s24_12500
                LEAN22S24=clip1080_lean_s24 NVLEAN12S24=clip1080_nvlean_s24_12500
-               MPEG2_13=clip1080_mpeg2_12500.m2v MPEG2_26=clip1080_mpeg2.m2v)
+               MPEG2_13=clip1080_mpeg2_12500.m2v MPEG2_26=clip1080_mpeg2.m2v
+               MID12S24=clip1080_mid_s24_12500 MID22S24=clip1080_mid_s24)
 set(lean_defs "")
 set(lean_deps "")
 foreach(entry IN LISTS LEAN_FILES)
@@ -58,7 +59,7 @@ foreach(flavour IN ITEMS c vmx)
   target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:C>:-O2 -Wall>)
   target_compile_definitions(${target} PRIVATE $<$<COMPILE_LANGUAGE:C>:${defs}>)
   target_include_directories(${target} PRIVATE ${APP_DIR}/src "${prefix}/include")
-  target_link_options(${target} PRIVATE -Wl,--wrap=pthread_create)
+  target_link_options(${target} PRIVATE -Wl,--wrap=pthread_create -Wl,--wrap=__xsdk_heap_map)
   target_link_libraries(${target} PRIVATE "${prefix}/lib/libavcodec.a" "${prefix}/lib/libavutil.a")
   xsdk_add_xex(${target} NAME "Moonlight 1080p decode bench (${flavour})" VERSION 0.1.0.0)
 endforeach()

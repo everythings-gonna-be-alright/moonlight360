@@ -23,8 +23,36 @@ void ui_draw_background(uint32_t width, uint32_t height)
     (void)width, (void)height;
 }
 
+/* The title size (37) drawn at 75%: about 28 pixels, between the body text and the titles. */
+void ui_draw_wordmark(int32_t x, int32_t cy)
+{
+    const float k = 0.75f;
+    const int32_t y = cy - 20;
+    gfx_scale_begin(k, (float)x, (float)cy);
+    gfx_text(x, y, 2, THEME_TEXT, "Moonlight");
+    gfx_text(x + gfx_text_width("Moonlight ", 2), y, 2, THEME_ACCENT, "360");
+    gfx_scale_end();
+}
+
+bool ui_fresh(void)
+{
+    return theme_look == LOOK_FRESH;
+}
+
+void ui_draw_veil(uint32_t width, uint32_t height, float alpha)
+{
+    if (alpha <= 0.0f)
+        return;
+    const uint32_t a = alpha >= 1.0f ? 255u : (uint32_t)(alpha * 255.0f);
+    gfx_rect(0.0f, 0.0f, (float)width, (float)height, 0.0f, a << 24 | (THEME_BG & 0x00FFFFFF));
+}
+
 void ui_draw_header(void)
 {
+    if (theme_look == LOOK_FRESH) {   /* Fresh: the name alone */
+        ui_draw_wordmark(THEME_LEFT, THEME_HEADER_Y + 22);
+        return;
+    }
     gfx_logo(THEME_LEFT, THEME_HEADER_Y, 48.0f);
     gfx_text(THEME_LEFT + 64, THEME_HEADER_Y + 4, 2, THEME_TEXT, "Moonlight");
     gfx_text(THEME_LEFT + 64 + gfx_text_width("Moonlight ", 2), THEME_HEADER_Y + 4, 2, THEME_ACCENT_TEXT, "360");
@@ -89,6 +117,10 @@ void ui_draw_status(uint32_t width, uint32_t height, const char *title, const ch
 void ui_draw_progress(uint32_t width, uint32_t height, const char *title, const char *subtitle,
                       const char *const *names, int count, int current, const char *detail)
 {
+    if (theme_look == LOOK_FRESH) {
+        menu_draw_progress_fresh(width, height, title, subtitle, names, count, current, detail);
+        return;
+    }
     enum { CARD_W = 820, CARD_H = 380, NODE_R = 16, TRACK_H = 4 };
     ui_draw_background(width, height);
     ui_draw_header();
@@ -437,10 +469,13 @@ static void draw_detailed(const HudStats *h, const PerfReadings *perf, const Net
     snprintf(b, sizeof b, " of %.0f fps", h->target_fps);
     const Piece head[] = { { a, h->ready ? fps_colour(h) : THEME_TEXT_3 }, { b, THEME_TEXT_2 } };
     draw_pieces(x + 18, y, head, 2);
-    snprintf(text, sizeof text, "%dp%s%s%s", h->height,
+    char quantiser[24] = "";
+    if (h->qp >= 0)
+        snprintf(quantiser, sizeof quantiser, "  QP %d", h->qp);
+    snprintf(text, sizeof text, "%dp%s%s%s%s", h->height,
              h->mpeg2 ? "  MPEG-2" : h->cabac < 0 ? "" : h->cabac ? "  CABAC" : "  CAVLC",
              h->stream_kind == STREAM_LEAN ? " lean" : h->stream_kind == STREAM_NO_DEBLOCK ? " no-deblock" : "",
-             h->fast_decode ? "  fast" : "");
+             h->fast_decode ? "  skip deblock" : "", quantiser);
     gfx_text_right(right, y, 1, THEME_TEXT_3, text);
     y += HUD_ROW + 4;
 

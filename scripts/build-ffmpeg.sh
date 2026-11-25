@@ -10,12 +10,14 @@ if git apply --reverse --check /work/patches/ffmpeg-xenon-vmx128.patch 2>/dev/nu
 XSDK=/work/third_party/xsdk
 TC=/opt/xsdk-gcc/bin/powerpc-xsdk-elf-
 mkdir -p /work/build/ffmpeg-xsdk-vmx && cd /work/build/ffmpeg-xsdk-vmx
-# A build configured before MPEG-2 was added is configured again.
+# A build configured before MPEG-2 was added, or before the compiler went through scripts/xenon-cc.sh, is configured
+# again.
 grep -qs 'define CONFIG_MPEG2VIDEO_DECODER 1' config_components.h || rm -f config.h
+grep -qs 'xenon-cc.sh' ffbuild/config.mak || { rm -f config.h; find . -name '*.o' -delete 2>/dev/null || true; }
 if [ ! -f config.h ]; then
 /work/third_party/ffmpeg/configure \
   --prefix=/work/build/prefix-xsdk-vmx \
-  --enable-cross-compile --cross-prefix="$TC" --arch=ppc --cpu=cell --target-os=none \
+  --enable-cross-compile --cross-prefix="$TC" --cc=/work/scripts/xenon-cc.sh --arch=ppc --cpu=cell --target-os=none \
   --disable-everything --disable-autodetect --disable-programs --disable-doc \
   --disable-avdevice --disable-avformat --disable-avfilter --disable-swscale --disable-swresample \
   --disable-network --enable-pthreads --disable-w32threads --disable-os2threads \
@@ -36,3 +38,7 @@ bad=$(/opt/xsdk-gcc/bin/powerpc-xsdk-elf-objdump -d /work/build/prefix-xsdk-vmx/
   | grep -cE '\s(vmladduhm|vmule[us][bh]|vmulo[us][bh]|vmsum[a-z]+|vsum[a-z0-9]+|vmhaddshs|vmhraddshs)\s' || true)
 echo "instructions Xenon lacks: $bad"
 [ "$bad" = 0 ]
+# Nor a sign-extending 16-bit load, which scripts/xenon-cc.sh writes around.
+slow=$(/opt/xsdk-gcc/bin/powerpc-xsdk-elf-objdump -d /work/build/prefix-xsdk-vmx/lib/libavcodec.a /work/build/prefix-xsdk-vmx/lib/libavutil.a \
+  | grep -cE '\s(lha|lhax|lhau|lhaux)\s' || true)
+echo "sign-extending 16-bit loads left: $slow"

@@ -26,7 +26,8 @@ extern const uint8_t cabac22_start[], cabac22_end[], cavlc22_start[], cavlc22_en
 #ifdef DECBENCH_VMX
 extern const uint8_t cavlc12s24_start[], cavlc12s24_end[], lean12s6_start[], lean12s6_end[], lean12s24_start[],
     lean12s24_end[], lean22s24_start[], lean22s24_end[], nvlean12s24_start[], nvlean12s24_end[], mpeg2_13_start[],
-    mpeg2_13_end[], mpeg2_26_start[], mpeg2_26_end[];
+    mpeg2_13_end[], mpeg2_26_start[], mpeg2_26_end[], mid12s24_start[], mid12s24_end[], mid22s24_start[],
+    mid22s24_end[];
 #endif
 
 /* The clips: one scene, 60 frames of 1080p30 with 6 slices, at three bitrates; each one's checksums decoded by FFmpeg
@@ -61,6 +62,11 @@ static const Clip clips[] = {
      * a macroblock row. */
     { "MPEG-2 13.4 Mbps", mpeg2_13_start, mpeg2_13_end, 0x34de5e07, 0x34de5e07, 0x34de5e07, true },
     { "MPEG-2 25.9 Mbps", mpeg2_26_start, mpeg2_26_end, 0xa85b4c17, 0xa85b4c17, 0xa85b4c17, true },
+    /* "mid": x264's superfast preset with its fastdecode tune, 24 slices: no deblocking like the lean streams, but
+     * sub-pixel motion and intra 4x4 and 8x8 blocks (Sunshine's software encoder at sw_preset = superfast,
+     * sw_tune = fastdecode,zerolatency). */
+    { "mid 11.4, 24 slices", mid12s24_start, mid12s24_end, 0x795e95e9, 0x795e95e9, 0x795e95e9 },
+    { "mid 22.4, 24 slices", mid22s24_start, mid22s24_end, 0xcc3d2faa, 0xcc3d2faa, 0xcc3d2faa },
 #endif
 };
 
@@ -78,6 +84,12 @@ typedef struct {
     bool exact;        /* no AV_CODEC_FLAG2_FAST: edges between slices deblocked too, on one thread after the slices */
     int queue;         /* AVCodecContext.slices: with a frame's slice count, the threads take slices from one queue;
                           0 is FFmpeg's own way, a batch of as many slices as threads at a time */
+    bool prof;         /* the decoder times its own parts (ff_xenon_prof), printed after the pass's line */
+    bool large_pages;  /* malloc's big blocks (frames, the decoder's larger tables) on 64 KB pages, not 4 KB */
+    int pitch, chroma_pitch;   /* pictures in physical memory with these row pitches, as the app lays them out for the
+                                  GPU (2048 and 1024 at 1080p); 0: FFmpeg's own buffers, rows 1920 and 960 apart */
+    int cr_offset;     /* with pitch: the third plane starts this many bytes into its memory */
+    int tune;          /* ff_xenon_tune: the decoder's experiments, by bit (h264dec.h) */
 } Pass;
 
 /* All passes as the app decodes now: 6 slice threads on the three cores. */
@@ -115,6 +127,219 @@ static const Pass passes[] = {
     { "all of it", 11, ALL_HW }, { "all of it, queue", 11, ALL_HW, .queue = 24 },
 #endif
 };
+
+static uint64_t now_us(void);
+static const void *kept_planes[3];   /* where the last frame's planes were, to see which memory they came from */
+
+/* malloc's blocks of 256 KB and more come from here (xsdk's sbrk.c): on 4 KB pages, or 64 KB ones for a pass that
+ * asks. The console's address translation holds few pages at once, so the page size decides how often it misses. */
+void *__real___xsdk_heap_map(size_t size_bytes);
+static bool large_pages;
+static unsigned large_page_blocks, large_page_failures;
+
+void *__wrap___xsdk_heap_map(size_t size_bytes)
+{
+    if (large_pages) {
+        void *base = NULL;
+        uint32_t bytes = ((uint32_t)size_bytes + 0xFFFF) & ~0xFFFFu;
+        if (NT_SUCCESS(NtAllocateVirtualMemory(&base, &bytes, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES,
+                                               PAGE_READWRITE, 0))) {
+            large_page_blocks++;
+            return base;
+        }
+        large_page_failures++;
+    }
+    return __real___xsdk_heap_map(size_bytes);
+}
+
+#ifdef DECBENCH_VMX
+/* "tune" in the dev server's arguments runs these instead: the streams the app plays, with the decoder timing its
+ * own parts, then with each of its experiments switched on. */
+#define LEAN12 7
+#define LEAN22 8
+#define NVLEAN 9
+#define NORMAL24 5
+#define MID12 12
+#define MID22 13
+#define SIX ALL_HW, .queue = 24
+#define ONE 1, false, false, false, 2, { 0 }, 0
+#define AS_APP .pitch = 2048, .chroma_pitch = 1024
+#define SPREAD .pitch = 2304, .chroma_pitch = 1280
+/* The app's layout since 2026-11-25: rows 2304 and 1280 bytes apart, the third plane a page into its memory. */
+#define APP_NOW .pitch = 2304, .chroma_pitch = 1280, .cr_offset = 4096
+/* The decoder as the app runs it (ff_xenon_tune's default), against FFmpeg's stock paths in FFmpeg's own buffers. */
+#define NOW 8 | 32 | 64 | 128 | 768
+static const Pass tune_passes[] = {
+    { "PROFILE, 1 thr, as the app", LEAN12, ONE, .prof = true, .tune = NOW, APP_NOW },
+    { "PROFILE, 6 thr, as the app", LEAN12, SIX, .prof = true, .tune = NOW, APP_NOW },
+    { "PROFILE, 6 thr, as the app", LEAN22, SIX, .prof = true, .tune = NOW, APP_NOW },
+    { "PROFILE, 6 thr, as the app", MID12, SIX, .prof = true, .tune = NOW, APP_NOW },
+    { "PROFILE, 6 thr, as the app", NORMAL24, SIX, .prof = true, .tune = NOW, APP_NOW },
+    { "stock", LEAN12, SIX }, { "as the app", LEAN12, SIX, .tune = NOW, APP_NOW },
+    { "stock", LEAN22, SIX }, { "as the app", LEAN22, SIX, .tune = NOW, APP_NOW },
+    { "stock", NVLEAN, SIX }, { "as the app", NVLEAN, SIX, .tune = NOW, APP_NOW },
+    { "stock", MID12, SIX }, { "as the app", MID12, SIX, .tune = NOW, APP_NOW },
+    { "stock", MID22, SIX }, { "as the app", MID22, SIX, .tune = NOW, APP_NOW },
+    { "stock", NORMAL24, SIX }, { "as the app", NORMAL24, SIX, .tune = NOW, APP_NOW },
+    { "as the app, skip deblock", NORMAL24, ALL_HW_SKIP, .queue = 24, .tune = NOW, APP_NOW },
+};
+
+/* What memory alone costs a frame of whole-pixel motion compensation: every macroblock of a 1080p frame copied from
+ * one picture to another as the decoder does it (16 rows of 16 luma bytes, 8 rows of 8 for each chroma plane, in
+ * raster order), with the pictures in memory of each kind, with and without prefetching; and the same copy on one
+ * macroblock over and over, which is the code's cost without the memory's. */
+enum { MT_W = 1920, MT_H = 1088, MT_LUMA = MT_W * MT_H, MT_BYTES = MT_LUMA * 3 / 2, MT_ROUNDS = 12 };
+
+static __attribute__((noinline)) void copy_frame(uint8_t *dst, const uint8_t *src, int prefetch, bool hot)
+{
+    for (int my = 0; my < MT_H / 16; my++)
+        for (int mx = 0; mx < MT_W / 16; mx++) {
+            const int x = hot ? 0 : mx * 16, y = hot ? 0 : my * 16;
+            const uint32_t *s = (const uint32_t *)(src + y * MT_W + x);
+            uint32_t *d = (uint32_t *)(dst + y * MT_W + x);
+            if (prefetch && !(mx & 7))   /* a cache line is 128 bytes: 8 macroblocks' worth of each row */
+                for (int r = 0; r < 16; r++) {
+                    __asm__ volatile("dcbt 0,%0" : : "r"((const uint8_t *)s + r * MT_W + prefetch));
+                    __asm__ volatile("dcbtst 0,%0" : : "r"((const uint8_t *)d + r * MT_W + prefetch));
+                }
+            for (int r = 0; r < 16; r++, s += MT_W / 4, d += MT_W / 4) {
+                d[0] = s[0];
+                d[1] = s[1];
+                d[2] = s[2];
+                d[3] = s[3];
+            }
+            for (int plane = 0; plane < 2; plane++) {
+                const size_t at = MT_LUMA + plane * (MT_LUMA / 4) + (y / 2) * (MT_W / 2) + x / 2;
+                const uint32_t *cs = (const uint32_t *)(src + at);
+                uint32_t *cd = (uint32_t *)(dst + at);
+                if (prefetch && !(mx & 15))
+                    for (int r = 0; r < 8; r++) {
+                        __asm__ volatile("dcbt 0,%0" : : "r"((const uint8_t *)cs + r * (MT_W / 2) + prefetch));
+                        __asm__ volatile("dcbtst 0,%0" : : "r"((const uint8_t *)cd + r * (MT_W / 2) + prefetch));
+                    }
+                for (int r = 0; r < 8; r++, cs += MT_W / 8, cd += MT_W / 8) {
+                    cd[0] = cs[0];
+                    cd[1] = cs[1];
+                }
+            }
+        }
+}
+
+static void memory_test(const char *name, uint8_t *a, uint8_t *b)
+{
+    if (!a || !b) {
+        printf("  %-34s not available\n", name);
+        return;
+    }
+    memset(a, 1, MT_BYTES);
+    memset(b, 2, MT_BYTES);
+    static const struct {
+        const char *name;
+        int prefetch;
+        bool hot;
+    } ways[] = { { "one MB over and over", 0, true }, { "frame", 0, false }, { "frame, prefetch 128 ahead", 128, false },
+                 { "frame, prefetch 256 ahead", 256, false } };
+    printf("  %-34s at %p:", name, (void *)a);
+    for (unsigned w = 0; w < sizeof ways / sizeof ways[0]; w++) {
+        const uint64_t t0 = now_us();
+        for (int round = 0; round < MT_ROUNDS; round++)   /* each frame is copied from the last one written */
+            copy_frame(round & 1 ? a : b, round & 1 ? b : a, ways[w].prefetch, ways[w].hot);
+        const double cycles = (double)(now_us() - t0) * 3200.0 / (MT_ROUNDS * (MT_W / 16) * (MT_H / 16));
+        printf("  %s %.0f", ways[w].name, cycles);
+    }
+    printf("  (cycles a macroblock)\n");
+    fflush(stdout);
+}
+
+static void memory_tests(void)
+{
+    xsdk_thread_move(2);
+    printf("Copying a 1080p frame macroblock by macroblock, by the memory the pictures are in:\n");
+    uint8_t *heap_a = malloc(MT_BYTES), *heap_b = malloc(MT_BYTES);
+    memory_test("malloc (4 KB pages)", heap_a, heap_b);
+    free(heap_a);
+    free(heap_b);
+    void *va = NULL, *vb = NULL;
+    uint32_t bytes_a = (MT_BYTES + 0xFFFF) & ~0xFFFFu, bytes_b = bytes_a;
+    if (!NT_SUCCESS(NtAllocateVirtualMemory(&va, &bytes_a, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE, 0)))
+        va = NULL;
+    if (!NT_SUCCESS(NtAllocateVirtualMemory(&vb, &bytes_b, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE, 0)))
+        vb = NULL;
+    memory_test("virtual, 64 KB pages", va, vb);
+    uint8_t *pa = MmAllocatePhysicalMemoryEx(0, bytes_a, PAGE_READWRITE | MEM_LARGE_PAGES, 0, UINT32_MAX, 0x10000);
+    uint8_t *pb = MmAllocatePhysicalMemoryEx(0, bytes_a, PAGE_READWRITE | MEM_LARGE_PAGES, 0, UINT32_MAX, 0x10000);
+    memory_test("physical, 64 KB pages (as the app)", pa, pb);
+    /* 16 MB pages: one block holds both pictures. */
+    uint8_t *big = MmAllocatePhysicalMemoryEx(0, 0x1000000, PAGE_READWRITE | 0x80000000u, 0, UINT32_MAX, 0x1000000);
+    memory_test("physical, one 16 MB page", big, big ? big + 0x800000 : NULL);
+    printf("\n");
+}
+
+/* The decoder's own timing (h264dec.h, the same order). */
+enum { XPROF_SKIP, XPROF_HEAD, XPROF_RESIDUAL, XPROF_MC, XPROF_INTRA, XPROF_IDCT, XPROF_FILTER, XPROF_TOTAL,
+       XPROF_START, XPROF_END, XPROF_MBS, XPROF_SKIPPED, XPROF_INTRA_MBS, XPROF_SLICES, XPROF_MID,
+       XPROF_MC_LUMA, XPROF_MC_CHROMA, XPROF_MC_PREFETCH, XPROF_IDCT_LUMA, XPROF_FAST_MBS, XPROF_SLICE_N = 32 };
+enum { XPROF_MAIN_FRAME, XPROF_MAIN_SPLIT, XPROF_MAIN_NALS, XPROF_MAIN_EXECUTE, XPROF_MAIN_FRAMES, XPROF_MAIN_N = 8 };
+extern int ff_xenon_prof, ff_xenon_tune;
+extern uint64_t ff_xenon_prof_slice[64][XPROF_SLICE_N];
+extern uint64_t ff_xenon_prof_main[XPROF_MAIN_N];
+static double ticks_a_ms;   /* the timebase's rate, measured in main */
+
+static void print_profile(void)
+{
+    const uint64_t *m = ff_xenon_prof_main;
+    const double frames = m[XPROF_MAIN_FRAMES] ? (double)m[XPROF_MAIN_FRAMES] : 1, f = 1.0 / (ticks_a_ms * frames);
+    uint64_t s[XPROF_SLICE_N] = { 0 };
+    int used = 0;
+    for (int i = 0; i < 64; i++) {
+        for (int k = 0; k < XPROF_SLICE_N; k++)
+            s[k] += ff_xenon_prof_slice[i][k];
+        if (ff_xenon_prof_slice[i][XPROF_SLICES])
+            used = i + 1;
+    }
+    const uint64_t parts = s[XPROF_SKIP] + s[XPROF_HEAD] + s[XPROF_RESIDUAL] + s[XPROF_MC] + s[XPROF_INTRA] +
+                           s[XPROF_IDCT] + s[XPROF_FILTER];
+    printf("    feeding thread, ms a frame: %.2f in the decoder = %.2f splitting the packet + %.2f headers and frame "
+           "start + %.2f slices (handed out, awaited) + %.2f after\n",
+           m[XPROF_MAIN_FRAME] * f, m[XPROF_MAIN_SPLIT] * f,
+           (m[XPROF_MAIN_NALS] - m[XPROF_MAIN_SPLIT] - m[XPROF_MAIN_EXECUTE]) * f, m[XPROF_MAIN_EXECUTE] * f,
+           (m[XPROF_MAIN_FRAME] - m[XPROF_MAIN_NALS]) * f);
+    printf("    slices, ms of thread time a frame: %.2f = skipped MBs %.2f + MB headers %.2f + coefficients %.2f + "
+           "motion %.2f + intra prediction %.2f + residual added %.2f + deblocking %.2f + the rest %.2f; "
+           "%.2f threads busy on average\n",
+           s[XPROF_TOTAL] * f, s[XPROF_SKIP] * f, s[XPROF_HEAD] * f, s[XPROF_RESIDUAL] * f, s[XPROF_MC] * f,
+           s[XPROF_INTRA] * f, s[XPROF_IDCT] * f, s[XPROF_FILTER] * f, (s[XPROF_TOTAL] - parts) * f,
+           m[XPROF_MAIN_EXECUTE] ? (double)s[XPROF_TOTAL] / (double)m[XPROF_MAIN_EXECUTE] : 0);
+    const double mbs = s[XPROF_MBS] ? (double)s[XPROF_MBS] : 1, cyc = 3200000.0 / ticks_a_ms;
+    const double coded = mbs - (double)s[XPROF_SKIPPED] > 0 ? mbs - (double)s[XPROF_SKIPPED] : 1;
+    const double intra = s[XPROF_INTRA_MBS] ? (double)s[XPROF_INTRA_MBS] : 1;
+    const double inter = mbs - (double)s[XPROF_INTRA_MBS] > 0 ? mbs - (double)s[XPROF_INTRA_MBS] : 1;
+    printf("    a frame's %.0f MBs: %.0f skipped, %.0f intra. Cycles each: skipped MB %.0f, header %.0f, coefficients "
+           "%.0f (coded MBs); motion %.0f (inter MBs); intra prediction %.0f (intra MBs); residual added %.0f; "
+           "deblocking %.0f (all MBs)\n",
+           mbs / frames, (double)s[XPROF_SKIPPED] / frames, (double)s[XPROF_INTRA_MBS] / frames,
+           s[XPROF_SKIPPED] ? s[XPROF_SKIP] * cyc / (double)s[XPROF_SKIPPED] : 0, s[XPROF_HEAD] * cyc / coded,
+           s[XPROF_RESIDUAL] * cyc / coded, s[XPROF_MC] * cyc / inter, s[XPROF_INTRA] * cyc / intra,
+           s[XPROF_IDCT] * cyc / mbs, s[XPROF_FILTER] * cyc / mbs);
+    printf("    motion, cycles an inter MB: %.0f = luma calls %.0f + chroma calls %.0f + FFmpeg's prefetching %.0f + "
+           "the rest %.0f; %.0f MBs a frame took the whole-pixel path. Residual added, cycles a MB: luma %.0f, "
+           "chroma %.0f\n",
+           s[XPROF_MC] * cyc / inter, s[XPROF_MC_LUMA] * cyc / inter, s[XPROF_MC_CHROMA] * cyc / inter,
+           s[XPROF_MC_PREFETCH] * cyc / inter,
+           (double)(s[XPROF_MC] - s[XPROF_MC_LUMA] - s[XPROF_MC_CHROMA] - s[XPROF_MC_PREFETCH]) * cyc / inter,
+           (double)s[XPROF_FAST_MBS] / frames, s[XPROF_IDCT_LUMA] * cyc / mbs,
+           (double)(s[XPROF_IDCT] - s[XPROF_IDCT_LUMA]) * cyc / mbs);
+    if (used > 1)
+        return;
+    printf("    slices' start > end after being handed out, ms:");
+    for (int i = 0; i < used; i++) {
+        const uint64_t *p = ff_xenon_prof_slice[i];
+        const double n = p[XPROF_SLICES] ? (double)p[XPROF_SLICES] * ticks_a_ms : 1;
+        printf(" %.1f>%.1f", p[XPROF_START] / n, p[XPROF_END] / n);
+    }
+    printf("\n");
+}
+#endif
 
 extern void (*ff_h264_mb_hook)(const void *h, void *sl);
 extern int ff_h264_skip_mc;
@@ -154,6 +379,54 @@ int __wrap_pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(
 }
 
 static AVFrame *kept;   /* one decoded frame, for the upload test */
+
+/* Pictures laid out as the app's (video.c): each plane in physical memory on 64 KB pages, its rows a chosen pitch
+ * apart. The data cache has 64 sets of four 128-byte lines, so rows 8192 bytes apart share a set: at the app's
+ * 1080p pitch of 2048 a macroblock's 16 rows fall into 4 sets, in the picture being written and the one being read
+ * alike. */
+static int buffer_pitch[3], buffer_cr_offset;
+static AVBufferPool *buffer_pools[3];
+
+static void buffer_free(void *opaque, uint8_t *data)
+{
+    MmFreePhysicalMemory(0, data - (intptr_t)opaque);
+}
+
+static AVBufferRef *buffer_alloc(void *opaque, size_t size)
+{
+    const intptr_t offset = (intptr_t)opaque;
+    const uint32_t rounded = ((uint32_t)size + (uint32_t)offset + 0xFFFF) & ~0xFFFFu;
+    uint8_t *memory = MmAllocatePhysicalMemoryEx(0, rounded, PAGE_READWRITE | MEM_LARGE_PAGES, 0, UINT32_MAX, 4096);
+    if (!memory)
+        return NULL;
+    AVBufferRef *buffer = av_buffer_create(memory + offset, size, buffer_free, opaque, 0);
+    if (!buffer)
+        MmFreePhysicalMemory(0, memory);
+    return buffer;
+}
+
+static int get_buffer(AVCodecContext *c, AVFrame *f, int flags)
+{
+    if (!buffer_pitch[0] || (f->format != AV_PIX_FMT_YUV420P && f->format != AV_PIX_FMT_YUVJ420P))
+        return avcodec_default_get_buffer2(c, f, flags);
+    int w = f->width, h = f->height, align[AV_NUM_DATA_POINTERS];
+    avcodec_align_dimensions2(c, &w, &h, align);
+    for (int p = 0; p < 3; p++) {
+        if (!buffer_pools[p])
+            buffer_pools[p] = av_buffer_pool_init2((size_t)buffer_pitch[p] * (size_t)(p ? (h + 1) / 2 : h),
+                                                   (void *)(intptr_t)(p == 2 ? buffer_cr_offset : 0), buffer_alloc, NULL);
+        f->buf[p] = buffer_pools[p] ? av_buffer_pool_get(buffer_pools[p]) : NULL;
+        if (!f->buf[p]) {
+            for (int q = 0; q < p; q++)
+                av_buffer_unref(&f->buf[q]);
+            return AVERROR(ENOMEM);
+        }
+        f->data[p] = f->buf[p]->data;
+        f->linesize[p] = buffer_pitch[p];
+    }
+    f->extended_data = f->data;
+    return 0;
+}
 
 /* Splits the Annex B stream into access units at each first-slice NAL (first_mb_in_slice == 0). */
 static const uint8_t *next_access_unit(const uint8_t *p, const uint8_t *end, const uint8_t **au_end)
@@ -232,9 +505,21 @@ static void run(const Pass *pass)
     ctx->slices = pass->queue;
     if (pass->skip_deblock)
         ctx->skip_loop_filter = AVDISCARD_ALL;
+    buffer_pitch[0] = pass->pitch;
+    buffer_pitch[1] = buffer_pitch[2] = pass->chroma_pitch;
+    buffer_cr_offset = pass->cr_offset;
+    ctx->get_buffer2 = get_buffer;
     ff_h264_mb_hook = pass->parse_only ? parse_only_hook : NULL;
     ff_h264_skip_mc = pass->no_mc;
     ff_xenon_chroma_c = pass->chroma_c;
+#ifdef DECBENCH_VMX
+    ff_xenon_tune = pass->tune;
+    large_pages = pass->large_pages;
+    large_page_blocks = large_page_failures = 0;
+    memset(ff_xenon_prof_slice, 0, sizeof ff_xenon_prof_slice);
+    memset(ff_xenon_prof_main, 0, sizeof ff_xenon_prof_main);
+    ff_xenon_prof = pass->prof;
+#endif
     if (avcodec_open2(ctx, codec, NULL) < 0) {
         printf("%-40s  avcodec_open2 failed\n", pass->name);
         return;
@@ -285,6 +570,8 @@ static void run(const Pass *pass)
             if (!kept) {
                 kept = av_frame_clone(frame);
             }
+            for (int pl = 0; pl < 3; pl++)
+                kept_planes[pl] = frame->data[pl];
             av_frame_unref(frame);
         }
         busy_us += now_us() - t0;
@@ -303,11 +590,25 @@ static void run(const Pass *pass)
     ff_h264_mb_hook = NULL;
     ff_h264_skip_mc = 0;
     ff_xenon_chroma_c = 0;
+#ifdef DECBENCH_VMX
+    if (pass->large_pages)
+        printf("    %u blocks on 64 KB pages, %u refused; a frame's planes at %p %p %p\n", large_page_blocks,
+               large_page_failures, kept_planes[0], kept_planes[1], kept_planes[2]);
+    if (pass->prof)
+        print_profile();
+    ff_xenon_prof = ff_xenon_tune = 0;
+    large_pages = false;
+#endif
     fflush(stdout);
     (void)busy_us;
     av_packet_free(&pkt);
     av_frame_free(&frame);
     avcodec_free_context(&ctx);
+    if (kept && pass->pitch)
+        av_frame_free(&kept);   /* the upload test wants a frame from FFmpeg's own buffers */
+    for (int pl = 0; pl < 3; pl++)
+        av_buffer_pool_uninit(&buffer_pools[pl]);
+    buffer_pitch[0] = 0;
 }
 
 /* Copying one decoded frame's three planes into GPU textures, as the app does each frame. */
@@ -348,7 +649,7 @@ static void upload_test(bool tiled)
         __asm__ volatile("mtctr %[n]\n1:\n" body "\nadd %[acc],%[acc],%[t]\nbdnz 1b" \
                          : [acc] "+b"(acc), [t] "+b"(t) \
                          : [n] "b"(n), [mem] "b"(mem), [k] "b"(k) \
-                         : "ctr", "cr0", "xer", "memory"); \
+                         : "ctr", "cr0", "xer", "memory", "lr", "v0", "v1", "v2"); \
         return acc; \
     }
 COST_LOOP(cost_add, "addi %[t],%[acc],3")
@@ -363,6 +664,34 @@ COST_LOOP(cost_load_lha, "lha %[t],0(%[mem])")
 COST_LOOP(cost_store_load_apart, "stw %[acc],0(%[mem])\nlwz %[t],64(%[mem])")
 COST_LOOP(cost_store_load_same, "stw %[acc],0(%[mem])\nlwz %[t],0(%[mem])")
 COST_LOOP(cost_multiply, "mullw %[t],%[acc],%[k]")
+/* The vector code's instructions: loads and stores, the shuffles around an unaligned load, a store of one word of
+ * a vector, and the cache hints. */
+COST_LOOP(cost_lvx, "lvx 0,0,%[mem]")
+COST_LOOP(cost_stvx, "stvx 0,0,%[mem]")
+COST_LOOP(cost_stvx_lvx_same, "stvx 0,0,%[mem]\nlvx 1,0,%[mem]")
+COST_LOOP(cost_stw_lvx_same, "stw %[acc],0(%[mem])\nlvx 1,0,%[mem]")
+COST_LOOP(cost_lvsl, "lvsl 0,0,%[mem]")
+COST_LOOP(cost_vperm, "vperm 0,0,1,2")
+COST_LOOP(cost_vaddubm, "vaddubm 0,0,1")
+COST_LOOP(cost_stvewx, "stvewx 0,0,%[mem]")
+COST_LOOP(cost_dcbt, "dcbt 0,%[mem]")
+COST_LOOP(cost_dcbtst, "dcbtst 0,%[mem]")
+COST_LOOP(cost_lwz, "lwz %[t],0(%[mem])")
+COST_LOOP(cost_lwz_unaligned, "lwz %[t],3(%[mem])")
+COST_LOOP(cost_stw, "stw %[acc],0(%[mem])")
+COST_LOOP(cost_lbz, "lbz %[t],5(%[mem])")
+COST_LOOP(cost_bctrl, "bl 2f\nb 3f\n2:\nblr\n3:")
+COST_LOOP(cost_lhz_extsh, "lhz %[t],0(%[mem])\nextsh %[t],%[t]")
+COST_LOOP(cost_andi_record, "andi. %[t],%[acc],255")
+COST_LOOP(cost_extsb, "extsb %[t],%[acc]")
+COST_LOOP(cost_cntlzw, "cntlzw %[t],%[acc]")
+COST_LOOP(cost_mfcr, "mfcr %[t]")
+COST_LOOP(cost_lwzx, "lwzx %[t],%[mem],%[k]")
+COST_LOOP(cost_divw, "divw %[t],%[acc],%[k]")
+COST_LOOP(cost_subfic, "subfic %[t],%[acc],32")
+COST_LOOP(cost_srawi_addze, "srawi %[t],%[acc],1\naddze %[t],%[t]")
+COST_LOOP(cost_branch_taken, "cmpwi 7,%[k],3\nbeq 7,2f\nnop\n2:")
+COST_LOOP(cost_branch_flip, "andi. %[t],%[acc],1\nbeq 2f\nnop\n2:\nli %[t],1")
 
 static void instruction_costs(void)
 {
@@ -383,6 +712,32 @@ static void instruction_costs(void)
         { "store, load elsewhere", cost_store_load_apart },
         { "store, load the same word", cost_store_load_same },
         { "multiply (mullw)", cost_multiply },
+        { "vector load (lvx)", cost_lvx },
+        { "vector store (stvx)", cost_stvx },
+        { "vector store, load the same", cost_stvx_lvx_same },
+        { "word store, vector load of it", cost_stw_lvx_same },
+        { "lvsl", cost_lvsl },
+        { "vperm", cost_vperm },
+        { "vector add (vaddubm)", cost_vaddubm },
+        { "store a vector's word (stvewx)", cost_stvewx },
+        { "dcbt, line in the cache", cost_dcbt },
+        { "dcbtst, line in the cache", cost_dcbtst },
+        { "word load (lwz)", cost_lwz },
+        { "word load, unaligned", cost_lwz_unaligned },
+        { "word store (stw)", cost_stw },
+        { "byte load (lbz)", cost_lbz },
+        { "call and return (bl, blr)", cost_bctrl },
+        { "lhz + extsh", cost_lhz_extsh },
+        { "andi.", cost_andi_record },
+        { "extsb", cost_extsb },
+        { "cntlzw", cost_cntlzw },
+        { "mfcr", cost_mfcr },
+        { "indexed load (lwzx)", cost_lwzx },
+        { "divide (divw)", cost_divw },
+        { "subfic", cost_subfic },
+        { "srawi + addze", cost_srawi_addze },
+        { "branch, always taken", cost_branch_taken },
+        { "branch, taken every other turn", cost_branch_flip },
     };
     enum { N = 20000000 };
     xsdk_thread_move(2);
@@ -409,6 +764,29 @@ int main(void)
     printf("30 fps needs 33.3 ms a frame, 60 fps 16.7 ms\n\n");
     fflush(stdout);
 #ifdef DECBENCH_VMX
+    if (strstr(devreturn_args(), "tune")) {
+        /* The timebase's rate, and what reading it costs (the profile reads it up to six times a macroblock). */
+        const uint64_t us0 = now_us(), tb0 = __builtin_ppc_get_timebase();
+        while (now_us() - us0 < 200000)
+            ;
+        ticks_a_ms = (double)(__builtin_ppc_get_timebase() - tb0) / ((double)(now_us() - us0) / 1000.0);
+        enum { READS = 2000000 };
+        uint64_t acc = 0;
+        const uint64_t r0 = now_us();
+        for (int i = 0; i < READS; i++)
+            acc += __builtin_ppc_get_timebase();
+        printf("timebase: %.0f ticks a ms; reading it takes %.0f cycles [%08x]\n\n", ticks_a_ms,
+               (double)(now_us() - r0) * 3200.0 / READS, (unsigned)acc);
+        instruction_costs();
+        if (strstr(devreturn_args(), "memory"))
+            memory_tests();
+        for (unsigned i = 0; i < sizeof tune_passes / sizeof tune_passes[0]; i++)
+            run(&tune_passes[i]);
+        printf("\ndecbench tune done\n");
+        fflush(stdout);
+        devreturn();
+        return 0;
+    }
     instruction_costs();
 #endif
     for (unsigned i = 0; i < sizeof passes / sizeof passes[0]; i++)

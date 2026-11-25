@@ -36,6 +36,11 @@ clip clip1080_lean_s6_12500 cavlc 12500 6 "--preset ultrafast"
 clip clip1080_lean_s24_12500 cavlc 12500 24 "--preset ultrafast"
 clip clip1080_lean_s24 cavlc 25000 24 "--preset ultrafast"
 clip clip1080_nvlean_s24_12500 cavlc 12500 24 "--preset veryfast --profile high --no-deblock --subme 0"
+# - "mid": x264's superfast preset with its fastdecode tune (no deblocking, no weighted prediction, CAVLC), what
+#   Sunshine's software encoder sends with sw_preset = superfast and sw_tune = fastdecode,zerolatency. Unlike the lean
+#   streams it has sub-pixel motion and smaller blocks. For decbench's tune passes.
+clip clip1080_mid_s24_12500 cavlc 12500 24 "--preset superfast --no-deblock --weightp 0"
+clip clip1080_mid_s24 cavlc 25000 24 "--preset superfast --no-deblock --weightp 0"
 
 # MPEG-2, as Sunshine's software encoder sends it (mpeg2_mode = 2): Main profile, P frames, a one-second buffer. Every
 # macroblock row is a slice of its own. For decbench's MPEG-2 passes.

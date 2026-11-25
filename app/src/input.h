@@ -54,6 +54,21 @@ void input_send_shortcut(InputShortcut shortcut);
 void input_set_menu_buttons(uint16_t buttons);
 /* Mouse mode's pointer speed: 0 slow, 1 normal, 2 fast. */
 void input_set_pointer_speed(int speed);
+/* Controller, mouse and key events sent to the host since the app started; rumble commands taken from it; and how
+ * many of those were passed on to a pad. */
+unsigned input_events_sent(void);
+unsigned input_rumbles(void);
+unsigned input_rumbles_passed(void);
+/* How the host's rumble commands reach the pads: INPUT_RUMBLE_ALL, each at once as it comes; 0, none; or at most
+ * that many a second, the newest strengths (see main.c: on Wi-Fi each one passed on risks the console's network). */
+enum { INPUT_RUMBLE_ALL = -1 };
+void input_set_rumble_limit(int per_second);
+/* A test: pad 1 reads as connected with its right stick turning, changed per_second times a second (0 stops it), so
+ * a stream carries a player's input traffic with nobody at the controller. */
+void input_set_fake(int per_second);
+/* A test: per_second rumble commands a second go to the first pad from here, barely felt, as a game's would from the
+ * host (0 stops them). */
+void input_set_fake_rumble(int per_second);
 /* Stops rumble on every pad. */
 void input_stop_rumble(void);
 /* moonlight-common-c rumble callback. */

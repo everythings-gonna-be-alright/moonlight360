@@ -35,6 +35,8 @@ typedef struct {
 } TextureSet;
 
 static XsdkShader vertex_shader, pixel_shader;
+static int frame_qp = -1;           /* the shown frame's quantiser */
+static unsigned qp_frames, qp_sum;  /* for render_average_qp: frames with a quantiser since its last call, their sum */
 static volatile uint32_t *vertices;
 static XsdkSamplerState sampler;
 static TextureSet sets[SETS];
@@ -56,6 +58,7 @@ bool render_init(void)
     NTSTATUS st = xsdk_shader_load(&vertex_shader, yuv_vert.container, yuv_vert.container_bytes);
     if (NT_SUCCESS(st))
         st = xsdk_shader_load(&pixel_shader, yuv_frag.container, yuv_frag.container_bytes);
+
     if (NT_SUCCESS(st))
         st = xsdk_shader_set_vertex_layout(&vertex_shader, layout, 2, (const uint32_t[]){ STRIDE_BYTES });
     if (!NT_SUCCESS(st)) {
@@ -114,6 +117,18 @@ void render_shutdown(void)
     xsdk_shader_free(&vertex_shader);
 }
 
+int render_frame_qp(void)
+{
+    return frame_qp;
+}
+
+int render_average_qp(void)
+{
+    const int qp = qp_frames ? (int)((qp_sum + qp_frames / 2) / qp_frames) : -1;
+    qp_frames = qp_sum = 0;
+    return qp;
+}
+
 void render_clear(void)
 {
     free_sets();
@@ -150,12 +165,38 @@ static void set_coefficients(const AVFrame *f)
     float y_scale = full ? 1.0f : 255.0f / 219.0f, y_offset = full ? 0.0f : 16.0f / 255.0f;
     float c_scale = full ? 1.0f : 255.0f / 224.0f;
     float u_g = -2.0f * kb * (1.0f - kb) / kg, v_g = -2.0f * kr * (1.0f - kr) / kg;
+    /* The frame's quantiser (H.264's QP; video.c puts it in the quality field), for the HUD and the log. */
+    frame_qp = f->quality >= 0 && f->quality <= 51 ? f->quality : -1;
+    if (frame_qp >= 0) {
+        qp_frames++;
+        qp_sum += (unsigned)frame_qp;
+    }
     const float c[12] = {
         y_scale, y_offset, 0, 0,
         0.0f, u_g * c_scale, 2.0f * (1.0f - kb) * c_scale, 0,
         2.0f * (1.0f - kr) * c_scale, v_g * c_scale, 0.0f, 0,
     };
     memcpy(coefficients, c, sizeof c);
+}
+
+/* A linear R8 texture of w by h texels whose rows are pitch bytes apart. xsdk gives a texture the least pitch its
+ * width allows; video.c may lay rows further apart than that, and such a pitch is the least one of a texture as wide
+ * as the pitch itself, whose first fetch word (type, pitch, tiling) and sizes in memory this texture takes over. */
+static bool plane_texture(XsdkTexture *t, uint32_t w, uint32_t h, uint32_t pitch)
+{
+    XsdkTexture wide;
+    if (!NT_SUCCESS(xsdk_texture_init(t, XSDK_FORMAT_R8, w, h, 1, false)))
+        return false;
+    if (t->pitch == pitch)
+        return true;
+    if (pitch < t->pitch || !NT_SUCCESS(xsdk_texture_init(&wide, XSDK_FORMAT_R8, pitch, h, 1, false)) ||
+        wide.pitch != pitch)
+        return false;
+    t->pitch = wide.pitch;
+    t->size_bytes = wide.size_bytes;
+    t->mip_offset_bytes = wide.mip_offset_bytes;
+    t->fetch[0] = wide.fetch[0];
+    return true;
 }
 
 /* Textures over a frame's own planes, as video.c laid them out; false if they don't line up. */
@@ -165,8 +206,7 @@ static bool attach_frame(TextureSet *set, const AVFrame *f)
         uint32_t pw = p ? (uint32_t)(f->width + 1) / 2 : (uint32_t)f->width;
         uint32_t ph = p ? (uint32_t)(f->height + 1) / 2 : (uint32_t)f->height;
         XsdkTexture *t = &set->planes[p];
-        if (!NT_SUCCESS(xsdk_texture_init(t, XSDK_FORMAT_R8, pw, ph, 1, false)) || t->pitch != (uint32_t)f->linesize[p] ||
-            ((uintptr_t)f->data[p] & 4095))
+        if (f->linesize[p] <= 0 || !plane_texture(t, pw, ph, (uint32_t)f->linesize[p]) || ((uintptr_t)f->data[p] & 4095))
             return false;
         xsdk_texture_attach(t, (volatile uint32_t *)f->data[p]);
         /* The decoder wrote the planes out of the CPU's cache (video.c); the GPU's caches may hold an older frame. */

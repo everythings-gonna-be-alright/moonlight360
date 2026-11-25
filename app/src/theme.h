@@ -15,6 +15,8 @@ extern const Theme themes[THEMES];
 extern const Theme *theme;   /* the one in use */
 /* Switches the accent colours to themes[index] (the first if it's out of range). Drawing thread. */
 void theme_set(int index);
+/* How the menus are drawn (LOOK_FRESH or LOOK_CLASSIC, config.h): menu.c sets it; ui.c and overlay.c follow it. */
+extern int theme_look;
 #define THEME_ACCENT (theme->accent)
 #define THEME_ACCENT_SOFT (theme->soft)
 #define THEME_ACCENT_TEXT (theme->text)

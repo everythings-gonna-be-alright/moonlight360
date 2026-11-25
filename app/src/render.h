@@ -15,5 +15,9 @@ void render_set_frame(struct AVFrame *frame);
 bool render_draw(uint32_t target_width, uint32_t target_height);
 /* After xsdk_present_end: remembers which GPU work last read the textures. */
 void render_frame_submitted(void);
+/* The shown frame's quantiser (H.264's QP: higher is coarser), or -1 if it has none. */
+int render_frame_qp(void);
+/* The average quantiser of the frames set up since the last call, for the HUD; -1 if none had one. */
+int render_average_qp(void);
 /* Drops the current frame (at the end of a stream). */
 void render_clear(void);

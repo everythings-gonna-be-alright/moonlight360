@@ -143,7 +143,33 @@ int __wrap_connect(int fd, const struct sockaddr *address, socklen_t length)
 /* Every recvfrom goes through here (-Wl,--wrap=recvfrom): the largest datagram seen on each socket and how many
  * were over 1400 bytes, to see what the host really sends. */
 enum { FIRST_SOCKET_FD = 35, SOCKET_SLOTS = 232, BIG_BYTES = 1400 };
-static atomic_uint largest[SOCKET_SLOTS], big_count[SOCKET_SLOTS], total_count[SOCKET_SLOTS];
+static atomic_uint largest[SOCKET_SLOTS], big_count[SOCKET_SLOTS], total_count[SOCKET_SLOTS], sent_count[SOCKET_SLOTS];
+
+/* Every sendto and send, counted per socket (-Wl,--wrap=sendto, --wrap=send): what the console transmits (pings,
+ * the control stream's acknowledgements, controller input) is part of the Wi-Fi adapter's load too. */
+ssize_t __real_sendto(int fd, const void *buffer, size_t length, int flags, const struct sockaddr *to, socklen_t to_length);
+ssize_t __real_send(int fd, const void *buffer, size_t length, int flags);
+
+static void count_sent(int fd, ssize_t n)
+{
+    const int slot = fd - FIRST_SOCKET_FD;
+    if (n > 0 && slot >= 0 && slot < SOCKET_SLOTS)
+        atomic_fetch_add(&sent_count[slot], 1);
+}
+
+ssize_t __wrap_sendto(int fd, const void *buffer, size_t length, int flags, const struct sockaddr *to, socklen_t to_length)
+{
+    const ssize_t n = __real_sendto(fd, buffer, length, flags, to, to_length);
+    count_sent(fd, n);
+    return n;
+}
+
+ssize_t __wrap_send(int fd, const void *buffer, size_t length, int flags)
+{
+    const ssize_t n = __real_send(fd, buffer, length, flags);
+    count_sent(fd, n);
+    return n;
+}
 
 ssize_t __real_recvfrom(int fd, void *buffer, size_t length, int flags, struct sockaddr *from, socklen_t *from_length);
 
@@ -189,6 +215,7 @@ void netfix_reset_datagrams(void)
         atomic_store(&largest[i], 0);
         atomic_store(&big_count[i], 0);
         atomic_store(&total_count[i], 0);
+        atomic_store(&sent_count[i], 0);
     }
 }
 
@@ -249,13 +276,30 @@ int __wrap_poll(struct pollfd *fds, nfds_t count, int timeout_ms)
     }
 }
 
+/* XAM's link status has a bit for a wireless link that xsdk doesn't name: 0x21 on Wi-Fi, 0x0B on a cable (logs). */
+enum { LINK_WIRELESS = 0x20 };
+
+bool netfix_on_wifi(void)
+{
+    uint32_t link = 0;
+    return xsdk_net_link(&link) == 0 && (link & LINK_WIRELESS);
+}
+
+unsigned netfix_received_total(void)
+{
+    unsigned total = 0;
+    for (int i = 0; i < SOCKET_SLOTS; i++)
+        total += atomic_load(&total_count[i]);
+    return total;
+}
+
 void netfix_snapshot(char *out, size_t size)
 {
     size_t at = 0;
     out[0] = 0;
-    for (int i = 0; i < SOCKET_SLOTS && at + 24 < size; i++) {
-        unsigned total = atomic_load(&total_count[i]);
-        if (total)
-            at += (size_t)snprintf(out + at, size - at, "%d:%u ", i + FIRST_SOCKET_FD, total);
+    for (int i = 0; i < SOCKET_SLOTS && at + 32 < size; i++) {
+        unsigned total = atomic_load(&total_count[i]), sent = atomic_load(&sent_count[i]);
+        if (total || sent)
+            at += (size_t)snprintf(out + at, size - at, "%d:%u/%u ", i + FIRST_SOCKET_FD, total, sent);
     }
 }

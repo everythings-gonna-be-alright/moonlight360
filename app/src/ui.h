@@ -9,6 +9,14 @@
 
 /* The full-screen backdrop. */
 void ui_draw_background(uint32_t width, uint32_t height);
+/* Fresh's name at the top left, "Moonlight 360", its middle on cy. */
+void ui_draw_wordmark(int32_t x, int32_t cy);
+/* Whether the menus are drawn in the Fresh look (config.h LOOK_FRESH). */
+bool ui_fresh(void);
+/* The background over the whole screen at alpha (0 to 1): what a fade goes through. */
+void ui_draw_veil(uint32_t width, uint32_t height, float alpha);
+/* Fresh's stream menu shows the app's cover (menu_fresh.inc, in menu.c): at (x, y), w by h. */
+void menu_draw_app_cover(float x, float y, float w, float h);
 /* Logo and title at the top left. */
 void ui_draw_header(void);
 /* A card in the middle of the screen: a spinner if busy, a title, a body, and the PIN in big digits if pin is set. */
@@ -18,6 +26,9 @@ void ui_draw_status(uint32_t width, uint32_t height, const char *title, const ch
  * entries; current is the one under way. */
 void ui_draw_progress(uint32_t width, uint32_t height, const char *title, const char *subtitle,
                       const char *const *names, int count, int current, const char *detail);
+/* The same in the Fresh look (menu_fresh.inc, in menu.c): the app's cover and the steps under its name. */
+void menu_draw_progress_fresh(uint32_t width, uint32_t height, const char *title, const char *subtitle,
+                              const char *const *names, int count, int current, const char *detail);
 /* Button hints along the bottom: buttons[i] (see gfx_button) with labels[i]; a NULL label shares the next one's. */
 void ui_draw_hints(const char *buttons, const char *const *labels);
 /* The stats HUD at the top left, over the video. STATS_COMPACT: one line (health, frame rate, latency, ping, loss).

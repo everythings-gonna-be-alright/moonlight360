@@ -10,6 +10,7 @@ const Theme themes[THEMES] = {
 };
 
 const Theme *theme = &themes[0];
+int theme_look;
 
 void theme_set(int index)
 {

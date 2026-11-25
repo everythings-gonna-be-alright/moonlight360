@@ -81,8 +81,8 @@ target_include_directories(moonlight360 PRIVATE src "${FFMPEG_PREFIX}/include"
 target_include_directories(moonlight360 PRIVATE "${TP}/stb")
 set_source_files_properties(src/image.c PROPERTIES COMPILE_OPTIONS "-Wno-sign-compare;-Wno-unused-function;-Wno-implicit-fallthrough")
 target_link_options(moonlight360 PRIVATE -Wl,--wrap=pthread_create -Wl,--wrap=setsockopt -Wl,--wrap=recvfrom -Wl,--wrap=connect
-  -Wl,--wrap=xsdk_log_write_bytes -Wl,--wrap=poll)
+  -Wl,--wrap=xsdk_log_write_bytes -Wl,--wrap=poll -Wl,--wrap=sendto -Wl,--wrap=send)
 target_link_libraries(moonlight360 PRIVATE gamestream moonlight-common-c opus
   "${FFMPEG_PREFIX}/lib/libavcodec.a" "${FFMPEG_PREFIX}/lib/libavutil.a")
 xsdk_add_shaders(moonlight360 shaders/yuv.vert shaders/yuv.frag shaders/shape.vert shaders/shape.frag shaders/font.vert shaders/font.frag shaders/image.vert shaders/image.frag)
-xsdk_add_xex(moonlight360 NAME "Moonlight 360" VERSION 0.3.0.0)
+xsdk_add_xex(moonlight360 NAME "Moonlight 360" VERSION 0.4.0.0)

@@ -19,5 +19,9 @@ void netfix_keepalive(const char *host, int pps);
 /* "The 360 way": no thread ever blocks inside the network stack. poll() and timed UDP receives become
  * non-blocking calls with 1 ms sleeps between them, in the title's own code. Set before any socket is made. */
 void netfix_set_nonblocking_waits(bool on);
-/* "fd:count ..." for every socket that received datagrams, for a timeline in the log. */
+/* Whether the console's link is Wi-Fi now. */
+bool netfix_on_wifi(void);
+/* Datagrams received on every socket since the last reset. */
+unsigned netfix_received_total(void);
+/* "fd:received/sent ..." for every socket that received or sent datagrams, for a timeline in the log. */
 void netfix_snapshot(char *out, size_t size);

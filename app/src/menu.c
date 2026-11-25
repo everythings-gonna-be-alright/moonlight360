@@ -48,6 +48,9 @@ enum {
     ITEM_VIDEO_TEST,
     ITEM_SHOW_RECENT,
     ITEM_MENU_COMBO,
+    ITEM_LOOK,     /* Fresh or Classic (config.h LOOK_*) */
+    ITEM_PLAY_PICTURE,   /* Fresh's Play: the app's cover or the moon */
+    ITEM_FORGET,         /* Fresh's PC: forget the PC (A held; menu_fresh.inc) */
     ITEMS,
 };
 
@@ -59,13 +62,17 @@ enum {
     TAB_ABOUT,   /* no rows: what the app is and its credits */
     TABS,
     TAB_ITEMS_MAX = 10,
+    TABS_MAX = 8,   /* the most tabs a look has: Fresh's Play, five Settings sections and About */
 };
 
 enum {
     KEYBOARD_CHARS = 64,
     MIN_BITRATE_KBPS = 1000,
-    MAX_BITRATE_KBPS = 50000,
+    MAX_BITRATE_KBPS = 70000,   /* past 50 untried on the console: the Bitrate row warns */
     BITRATE_STEP_KBPS = 1000,
+    /* The most worth setting on the console's Wi-Fi: the user's link carried 22 to 25 Mbit/s, and at 30 and 40 set
+     * it lost frames (shown 49 and 34 fps; logs, 2026-11-24). More can still be set; the row warns. */
+    WIFI_MAX_BITRATE_KBPS = 25000,
     /* Held D-pad or stick: repeats after REPEAT_DELAY frames, then every REPEAT_RATE. */
     REPEAT_DELAY = 24,
     REPEAT_RATE = 5,
@@ -94,15 +101,34 @@ typedef struct {
     int items[TAB_ITEMS_MAX];
 } Tab;
 
-static const Tab tabs[TABS] = {
+/* Classic: five tabs along the top. */
+static const Tab classic_tabs[TABS] = {
     { "Play", 3, { ITEM_CONNECT, ITEM_APP, ITEM_HOST } },
     { "Video", 9, { ITEM_RESOLUTION, ITEM_FPS, ITEM_BITRATE, ITEM_CODEC, ITEM_LOW_LATENCY, ITEM_FAST_DECODE,
                    ITEM_STATS, ITEM_HUD_CORNER, ITEM_HUD_SIZE } },
     { "Network", 4, { ITEM_WAKE, ITEM_AUDIO_PACKETS, ITEM_PACKET_SIZE, ITEM_SLICES } },
-    { "Other", 9, { ITEM_AUTO_RESUME, ITEM_SHOW_RECENT, ITEM_MENU_COMBO, ITEM_AUDIO_ON_HOST, ITEM_SOUNDS, ITEM_RUMBLE,
-                    ITEM_THEME, ITEM_VIDEO_TEST, ITEM_LOGGING } },
+    { "Other", 10, { ITEM_AUTO_RESUME, ITEM_SHOW_RECENT, ITEM_MENU_COMBO, ITEM_AUDIO_ON_HOST, ITEM_SOUNDS, ITEM_RUMBLE,
+                     ITEM_LOOK, ITEM_THEME, ITEM_VIDEO_TEST, ITEM_LOGGING } },
     { "About", 0, { 0 } },
 };
+
+/* Fresh: Play, Settings (its sections, chosen from a list at the left) and About (menu_fresh.inc). */
+enum { FRESH_TABS = 8, FRESH_ABOUT = 7 };
+static const Tab fresh_tabs[FRESH_TABS] = {
+    { "Play", 1, { ITEM_CONNECT } },
+    { "Quality", 6, { ITEM_RESOLUTION, ITEM_FPS, ITEM_BITRATE, ITEM_CODEC, ITEM_LOW_LATENCY, ITEM_FAST_DECODE } },
+    { "PC", 4, { ITEM_HOST, ITEM_WAKE, ITEM_AUTO_RESUME, ITEM_FORGET } },
+    { "Controls", 2, { ITEM_MENU_COMBO, ITEM_RUMBLE } },
+    { "Sound", 3, { ITEM_AUDIO_ON_HOST, ITEM_SOUNDS, ITEM_AUDIO_PACKETS } },
+    { "Look", 7, { ITEM_LOOK, ITEM_PLAY_PICTURE, ITEM_THEME, ITEM_SHOW_RECENT, ITEM_STATS, ITEM_HUD_CORNER,
+                   ITEM_HUD_SIZE } },
+    { "Advanced", 4, { ITEM_PACKET_SIZE, ITEM_SLICES, ITEM_VIDEO_TEST, ITEM_LOGGING } },
+    { "About", 0, { 0 } },
+};
+
+/* The look's tabs (set_look). */
+static const Tab *tabs = classic_tabs;
+static int tab_count = TABS;
 
 typedef struct {
     int width, height;
@@ -119,7 +145,8 @@ static const Resolution resolutions[] = {
     { 1920, 1080, "1920\xC3\x97" "1080" },
 };
 static const int frame_rates[] = { 30, 60 };
-static const int audio_durations[] = { 20, 10, 5 };
+/* Not 40: the host (Vibeshine, 2026-11-24) gave no working stream when asked for it. */
+static const int audio_durations[] = { 5, 10, 20 };   /* shortest first; 20 is the default */
 /* No 512/256: smaller packets mean more packets per second, and a flood of small packets (5 ms audio, or 256-byte
  * video at ~4000/s) makes the console's Wi-Fi stop receiving until reboot (2026-11-22). */
 static const int packet_sizes[] = { 1392, 1024 };
@@ -132,7 +159,7 @@ static const int slice_counts[] = { 6, 12, 24, 48 };
 static Config *config;
 static const char *config_path;
 static int tab;
-static int cursor[TABS];
+static int cursor[TABS_MAX];
 static char message[512];
 /* Settings: the selected row also shows what it does (Y turns it on and off). Warnings show either way. */
 static bool show_details;
@@ -179,7 +206,7 @@ static int selected_item(void)
 
 static void select_item(int item)
 {
-    for (int t = 0; t < TABS; t++)
+    for (int t = 0; t < tab_count; t++)
         for (int i = 0; i < tabs[t].count; i++)
             if (tabs[t].items[i] == item) {
                 tab = t;
@@ -209,12 +236,35 @@ static void save(void)
     config_save(config_path, config);
 }
 
+static bool fresh(void)
+{
+    return config->look != LOOK_CLASSIC;
+}
+
+/* The tabs of the look in use; ui.c and overlay.c follow theme_look. */
+static void set_look(void)
+{
+    tabs = fresh() ? fresh_tabs : classic_tabs;
+    tab_count = fresh() ? FRESH_TABS : TABS;
+    theme_look = config->look;
+    if (tab >= tab_count)
+        tab = TAB_PLAY;
+}
+
 void menu_open(Config *c, const char *path)
 {
     config = c;
     config_path = path;
     theme_set(config->theme);
-    select_item(config->host[0] ? ITEM_CONNECT : ITEM_HOST);
+    set_look();
+    select_item(config->host[0] || fresh() ? ITEM_CONNECT : ITEM_HOST);   /* Fresh's Play welcomes a new user */
+}
+
+static bool on_wifi;
+
+void menu_set_wifi(bool wifi)
+{
+    on_wifi = wifi;
 }
 
 void menu_set_message(const char *text)
@@ -344,6 +394,14 @@ static void change(int item, int step)
         config->theme = step_choice(config->theme, THEMES, step);
         theme_set(config->theme);
         break;
+    case ITEM_PLAY_PICTURE:
+        config->play_moon = !config->play_moon;
+        break;
+    case ITEM_LOOK:   /* the other look's tabs, on the same row */
+        config->look = config->look == LOOK_CLASSIC ? LOOK_FRESH : LOOK_CLASSIC;
+        set_look();
+        select_item(ITEM_LOOK);
+        break;
     default:
         return;
     }
@@ -403,6 +461,13 @@ static bool poll_keyboard(void)
     keyboard_item = -1;
     return false;
 }
+
+/* ---- Fresh (menu_fresh.inc, included at the end) ---- */
+
+static MenuAction fresh_update_play(uint16_t p, uint16_t nav, uint32_t pad);
+static void fresh_draw(uint32_t width, uint32_t height);
+static bool fresh_startup_skip(const InputState *input);
+static bool fresh_update_nav(uint16_t p, uint16_t nav, uint32_t pad, MenuAction *action);
 
 /* ---- input ---- */
 
@@ -608,9 +673,15 @@ static MenuAction activate(int item, uint32_t pad)
     }
 }
 
+/* This frame's input, for what goes by a button held (Fresh's Forget this PC). */
+static const InputState *update_input;
+
 static MenuAction update(const InputState *input)
 {
+    update_input = input;
     if (poll_keyboard())
+        return MENU_NONE;
+    if (fresh_startup_skip(input))   /* the startup takes the buttons: any one skips it */
         return MENU_NONE;
     if (picker_open) {
         update_picker(input);
@@ -628,10 +699,13 @@ static MenuAction update(const InputState *input)
 
     if (p & INPUT_GAMEPAD_BACK)
         return MENU_EXIT;
+    MenuAction fresh_action;
+    if (fresh() && fresh_update_nav(p, nav, pad, &fresh_action))   /* Fresh's places and Settings' sections */
+        return fresh_action;
     if (p & INPUT_GAMEPAD_LEFT_SHOULDER)
-        tab = (tab + TABS - 1) % TABS;
+        tab = (tab + tab_count - 1) % tab_count;
     if (p & INPUT_GAMEPAD_RIGHT_SHOULDER)
-        tab = (tab + 1) % TABS;
+        tab = (tab + 1) % tab_count;
     if (p & (INPUT_GAMEPAD_LEFT_SHOULDER | INPUT_GAMEPAD_RIGHT_SHOULDER)) {
         uisound_play(UISOUND_MOVE);
         return MENU_NONE;
@@ -648,7 +722,9 @@ static MenuAction update(const InputState *input)
         }
         return MENU_NONE;
     }
-    if ((p & INPUT_GAMEPAD_Y) && tab != TAB_PLAY) {
+    if (fresh() && tab == TAB_PLAY)
+        return fresh_update_play(p, nav, pad);
+    if ((p & INPUT_GAMEPAD_Y) && tab != TAB_PLAY && !fresh()) {   /* Fresh shows what a setting does beside it */
         show_details = !show_details;
         uisound_play(UISOUND_CHANGE);
         return MENU_NONE;
@@ -844,7 +920,7 @@ static void item_help(int item, const char **help, const char **warning)
         if (config->height > 900 && config->fps > 30)
             *warning = LEAN_NOTICE;
         else if (config->height > 900 && !config->fast_decode)
-            *warning = "With a hardware encoder's stream, 1080p needs Fast decode on (Video tab). A lean stream "
+            *warning = "With a hardware encoder's stream, 1080p needs Skip deblocking on (Video tab). A lean stream "
                        "(the PC's Software encoder, ultrafast preset) doesn't.";
         break;
     case ITEM_FPS:
@@ -853,17 +929,23 @@ static void item_help(int item, const char **help, const char **warning)
             *warning = LEAN_NOTICE;
         break;
     case ITEM_BITRATE:
-        *help = "Higher looks sharper, and takes the console longer to decode. Over Ethernet 30 Mbps works at 1080p "
-                "and 60 fps; on the console's Wi-Fi keep 6 to 10.";
+        *help = "Higher looks sharper, and takes the console longer to decode. With a network cable 30 Mbps works at "
+                "1080p and 60 fps; on the console's Wi-Fi keep to 25 or less.";
         /* A lean 1080p60 stream decodes in 12.8 ms at 30 Mbps (logs, 2026-11-24) and about 1.25 ms more for every
          * 100 kbit a frame (decbench): near 15 ms at 40 Mbps, past the 16.7 there are at 50. Not yet tried. */
-        if (config->bitrate_kbps > 40000 && config->height > 900 && config->fps > 30)
+        if (on_wifi && config->bitrate_kbps > WIFI_MAX_BITRATE_KBPS)
+            *warning = "On Wi-Fi keep to 25 Mbps or less: the console's Wi-Fi carries about that much, and past it "
+                       "frames are lost and the picture stutters. A network cable takes more.";
+        else if (config->bitrate_kbps > 40000 && config->height > 900 && config->fps > 30)
             *warning = "Past 40 Mbps the console probably can't decode 1080p at 60 fps in time: frames would drop. "
                        "Watch the stats.";
+        else if (config->bitrate_kbps > 50000)
+            *warning = "Past 50 Mbps is untried on the console: it may not decode every frame in time, and needs a "
+                       "network cable. Watch the stats.";
         break;
     case ITEM_FAST_DECODE:
-        *help = "Skips H.264's deblocking filter: about 30% faster decoding, a slightly blockier picture. Needed for "
-                "1080p, unless the PC sends a lean stream (then leave it off).";
+        *help = "About 30% faster decoding: skips H.264's deblocking filter, so the picture is a little blockier. "
+                "Needed for 1080p, unless the PC sends a lean stream (then leave it off).";
         break;
     case ITEM_LOW_LATENCY:
         *help = "Draws each frame the moment it's decoded instead of on a fixed beat, so it reaches the TV up to a "
@@ -883,10 +965,13 @@ static void item_help(int item, const char **help, const char **warning)
                 "doesn't lighten the console's Wi-Fi.";
         break;
     case ITEM_AUDIO_PACKETS:
-        *help = "How much sound each packet carries. 20 ms keeps the packet rate low.";
-        if (config->audio_packet_ms != 20)
-            *warning = "Shorter packets flood the console's Wi-Fi with tiny packets: it stops receiving until you "
-                       "reboot.";
+        *help = "How much sound each packet carries: longer packets mean fewer of them. 20 ms suits a cable and "
+                "Wi-Fi.";
+        if (config->audio_packet_ms < 20)
+            *warning = on_wifi ? "On Wi-Fi the stream gets 20 ms packets whatever is set here: shorter ones make the "
+                                 "console's Wi-Fi adapter stop receiving until a reboot."
+                               : "Only with a network cable: on Wi-Fi the app keeps to 20 ms, as shorter packets make "
+                                 "the console's Wi-Fi adapter stop receiving until a reboot.";
         break;
     case ITEM_PACKET_SIZE:
         *help = "Video packet size. 1392 means fewer packets a second, which the console's Wi-Fi handles best.";
@@ -928,6 +1013,10 @@ static void item_help(int item, const char **help, const char **warning)
         break;
     case ITEM_RUMBLE:
         *help = "Passes the game's rumble on to the controllers.";
+        if (on_wifi && config->rumble)
+            *warning = "No rumble while the console is on Wi-Fi: passing it on to the controller during a stream "
+                       "makes the console's Wi-Fi adapter stop receiving until a reboot. With a network cable it "
+                       "works.";
         break;
     case ITEM_SHOW_RECENT:
         *help = "Shows the apps you streamed lately as covers on the Play tab, for one press to stream them again.";
@@ -955,6 +1044,21 @@ static void item_help(int item, const char **help, const char **warning)
     case ITEM_THEME:
         *help = "The menus' accent colour: the selection, buttons, switches and the logo.";
         break;
+    case ITEM_FORGET:
+        *help = config->host[0]
+                    ? "Removes this PC from Moonlight: its address, its address for waking it and the recent apps. "
+                      "Hold A for a second. The PC still lists the console as paired (Sunshine's web UI, Clients), "
+                      "where it can be removed too."
+                    : "No PC is set: Play finds one.";
+        break;
+    case ITEM_PLAY_PICTURE:
+        *help = "What Play shows on the right: the app's cover, lighting the page in its colour, or the moon and its "
+                "night sky, with its rare events now and then.";
+        break;
+    case ITEM_LOOK:
+        *help = "How the menus are drawn. Fresh: Play, Settings and About, your covers first. Classic: five tabs and "
+                "the night sky. Settings stay the same; it changes right away.";
+        break;
     default:
         *help = "";
         break;
@@ -967,14 +1071,14 @@ static void draw_tabs(void)
 {
     enum { GAP = 26 };
     int32_t total = 0;
-    for (int t = 0; t < TABS; t++)
+    for (int t = 0; t < tab_count; t++)
         total += gfx_text_width(tabs[t].name, 2) + (t ? GAP : 0);
     const int32_t cy = THEME_HEADER_Y + 24;
     int32_t x = THEME_RIGHT - 38 - 24 - total;
     gfx_button(x - 24 - 38, cy, 'L');
     gfx_button(THEME_RIGHT - 38, cy, 'R');
     static float line_x = -1.0f, line_w;
-    for (int t = 0; t < TABS; t++) {
+    for (int t = 0; t < tab_count; t++) {
         const int32_t w = gfx_text_width(tabs[t].name, 2);
         gfx_text(x, cy - 22, 2, t == tab ? THEME_TEXT : THEME_TEXT_3, tabs[t].name);
         if (t == tab) {   /* the underline slides over to the new tab */
@@ -1067,8 +1171,11 @@ static void draw_value(int item, int32_t right, int32_t y, int32_t cy, bool sele
         draw_choice(right, y, value, selected, text);
         break;
     case ITEM_BITRATE: {
-        snprintf(value, sizeof value, "%d Mbps", config->bitrate_kbps / 1000);
-        const int32_t left = draw_choice(right, y, value, selected, text);
+        /* Past what Wi-Fi carries the value says so itself, selected or not. */
+        const bool over_wifi = on_wifi && config->bitrate_kbps > WIFI_MAX_BITRATE_KBPS;
+        snprintf(value, sizeof value, over_wifi ? "%d Mbps \xC2\xB7 too high for Wi-Fi" : "%d Mbps",
+                 config->bitrate_kbps / 1000);
+        const int32_t left = draw_choice(right, y, value, selected, over_wifi ? THEME_WARN : text);
         const float track_w = 200.0f, track_x = (float)left - 28.0f - track_w;
         const float share = (float)(config->bitrate_kbps - MIN_BITRATE_KBPS) / (MAX_BITRATE_KBPS - MIN_BITRATE_KBPS);
         gfx_rect(track_x, (float)cy - 3.0f, track_w, 6.0f, 3.0f, THEME_TRACK);
@@ -1144,9 +1251,14 @@ static void draw_value(int item, int32_t right, int32_t y, int32_t cy, bool sele
     case ITEM_AUDIO_ON_HOST:
         draw_choice(right, y, config->audio_on_host ? "PC" : "Xbox", selected, text);
         break;
+    case ITEM_LOOK:
+        draw_choice(right, y, config->look == LOOK_CLASSIC ? "Classic" : "Fresh", selected, text);
+        break;
     case ITEM_AUDIO_PACKETS:
-        snprintf(value, sizeof value, "%d ms", config->audio_packet_ms);
-        draw_choice(right, y, value, selected, config->audio_packet_ms != 20 ? THEME_WARN : text);
+        /* 10 and 5 carry their warning in the value itself, selected or not. */
+        snprintf(value, sizeof value, config->audio_packet_ms < 20 ? "%d ms \xC2\xB7 hangs Wi-Fi" : "%d ms",
+                 config->audio_packet_ms);
+        draw_choice(right, y, value, selected, config->audio_packet_ms < 20 ? THEME_WARN : text);
         break;
     case ITEM_PACKET_SIZE:
         snprintf(value, sizeof value, "%d bytes", config->packet_size);
@@ -1171,7 +1283,7 @@ static const char *item_label(int item)
     case ITEM_RESOLUTION: return "Resolution";
     case ITEM_FPS: return "Frame rate";
     case ITEM_BITRATE: return "Bitrate";
-    case ITEM_FAST_DECODE: return "Fast decode";
+    case ITEM_FAST_DECODE: return "Skip deblocking";
     case ITEM_LOW_LATENCY: return "Low-latency display";
     case ITEM_STATS: return "Stats";
     case ITEM_AUDIO_ON_HOST: return "Sound plays on";
@@ -1192,6 +1304,9 @@ static const char *item_label(int item)
     case ITEM_WAKE: return "Wake the PC";
     case ITEM_VIDEO_TEST: return "Video test";
     case ITEM_THEME: return "Theme";
+    case ITEM_LOOK: return "Look";
+    case ITEM_PLAY_PICTURE: return "Play picture";
+    case ITEM_FORGET: return "Forget this PC";
     case ITEM_APP: return "App";
     case ITEM_HOST: return "Host PC";
     default: return "";
@@ -1227,6 +1342,8 @@ static Icon item_icon(int item)
     case ITEM_WAKE: return ICON_WAKE;
     case ITEM_VIDEO_TEST: return ICON_TEST;
     case ITEM_THEME: return ICON_THEME;
+    case ITEM_LOOK: return ICON_THEME;
+    case ITEM_PLAY_PICTURE: return ICON_THEME;
     default: return ICONS;   /* none */
     }
 }
@@ -1260,7 +1377,7 @@ static void draw_about(int32_t y)
     const int32_t x = CONTENT_X + 16;
     gfx_text(x, y, 2, THEME_TEXT, "Moonlight 360");
     gfx_text(x + gfx_text_width("Moonlight 360", 2) + 16, y + 14, 1, THEME_TEXT_3,
-             "version 0.3  \xC2\xB7  build " __DATE__ " " __TIME__);
+             "version 0.4  \xC2\xB7  build " __DATE__ " " __TIME__);
     y += 48;
     gfx_text(x, y, 1, THEME_TEXT_2,
              "Streams games from a PC running Sunshine, Apollo or Vibeshine to an Xbox 360 (RGH, Aurora).");
@@ -1303,7 +1420,9 @@ static void draw_about(int32_t y)
     }
     y += 18;
     gfx_text(x, y, 1, THEME_TEXT_3,
-             config->logging ? "Logging is on: Y shows the log." : "Logging is off (Other tab).");
+             config->logging ? "Logging is on: Y shows the log."
+             : fresh()       ? "Logging is off (Settings, Advanced)."
+                             : "Logging is off (Other tab).");
 }
 
 /* The About tab's log view: the newest lines, oldest at the top, errors red and warnings yellow. */
@@ -1353,10 +1472,12 @@ static void draw_log(void)
 /* A small heading above row i of the tab, where a group starts, or NULL. */
 static const char *section_before(int t, int i)
 {
-    if (t == TAB_VIDEO)   /* Resolution, Frame rate, Bitrate, Codec | Low-latency, Fast decode | Stats, position, size */
+    if (tabs != classic_tabs)
+        return NULL;
+    if (t == TAB_VIDEO)   /* Resolution, Frame rate, Bitrate, Codec | Low-latency, Skip deblocking | Stats, position, size */
         return i == 0 ? "QUALITY" : i == 4 ? "PERFORMANCE" : i == 6 ? "STATS" : NULL;
     if (t == TAB_OTHER)
-        return i == 0 ? "GENERAL" : i == 3 ? "SOUND" : i == 6 ? "APPEARANCE" : i == 7 ? "DEBUG" : NULL;
+        return i == 0 ? "GENERAL" : i == 3 ? "SOUND" : i == 6 ? "APPEARANCE" : i == 8 ? "DEBUG" : NULL;
     return NULL;
 }
 
@@ -1409,7 +1530,7 @@ static int draw_settings_tab(void)
             sel_bottom = total;
     }
     const int32_t visible = THEME_PANEL_BOTTOM - CONTENT_Y;
-    static float scroll[TABS];
+    static float scroll[TABS_MAX];
     float target = scroll[tab];
     if (sel_bottom - target > visible)
         target = (float)(sel_bottom - visible);
@@ -1472,9 +1593,9 @@ static int draw_settings_tab(void)
         }
         y += SET_ROW_H + extra + tip;
     }
-    if (tab == TAB_ABOUT && about_log && config->logging)
+    if (tabs[tab].count == 0 && about_log && config->logging)
         draw_log();
-    else if (tab == TAB_ABOUT)
+    else if (tabs[tab].count == 0)
         draw_about(CONTENT_Y + 8);
     return (scroll[tab] > 0.5f ? CUT_TOP : 0) | ((float)total - scroll[tab] > (float)visible + 0.5f ? CUT_BOTTOM : 0);
 }
@@ -1913,6 +2034,10 @@ static void draw_picker(void)
 
 void menu_draw(uint32_t width, uint32_t height)
 {
+    if (fresh()) {
+        fresh_draw(width, height);
+        return;
+    }
     ui_draw_background(width, height);
     PerfReadings perf;
     perf_get(&perf);
@@ -1990,3 +2115,6 @@ void menu_draw(uint32_t width, uint32_t height)
         ui_draw_hints(is_toggle(item) ? "ABYLR" : "DBYLR", labels);
     }
 }
+
+/* Fresh: drawn and driven from here, with the statics above. */
+#include "menu_fresh.inc"

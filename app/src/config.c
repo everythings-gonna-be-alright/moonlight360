@@ -47,6 +47,8 @@ bool config_load(const char *path, Config *c)
     c->logging = false;
     c->ui_sounds = true;
     c->theme = 0;
+    c->look = LOOK_FRESH;
+    c->play_moon = false;
     c->auto_resume = false;
     c->show_recent = true;
     c->menu_combo = COMBO_BACK;
@@ -104,6 +106,10 @@ bool config_load(const char *path, Config *c)
             c->ui_sounds = atoi(value) != 0;
         else if (!strcmp(key, "theme"))
             c->theme = atoi(value);
+        else if (!strcmp(key, "look"))
+            c->look = !strcmp(value, "classic") ? LOOK_CLASSIC : LOOK_FRESH;
+        else if (!strcmp(key, "play_picture"))
+            c->play_moon = !strcmp(value, "moon");
         else if (!strcmp(key, "auto_resume"))
             c->auto_resume = atoi(value) != 0;
         else if (!strcmp(key, "show_recent"))
@@ -165,8 +171,17 @@ bool config_load(const char *path, Config *c)
     return c->host[0] != '\0';
 }
 
+static bool read_only;
+
+void config_set_read_only(bool on)
+{
+    read_only = on;
+}
+
 bool config_save(const char *path, const Config *c)
 {
+    if (read_only)   /* an automatic test's overrides (main.c) never reach the file */
+        return true;
     FILE *f = fopen(path, "w");
     if (!f) {
         printf("[E] config: cannot write %s\n", path);
@@ -187,7 +202,8 @@ bool config_save(const char *path, const Config *c)
             "stats=%d\n"
             "# 1 skips H.264's deblocking filter: faster decoding, slightly blockier picture\n"
             "fast_decode=%d\n"
-            "# audio_packet_ms: 20, 10 or 5. Keep 20 on Wi-Fi: 5 (Moonlight's usual) kills the console's Wi-Fi\n"
+            "# audio_packet_ms: 20, 10 or 5. 10 and 5 (Moonlight's usual) hang the console's Wi-Fi until a reboot,\n"
+            "# so on Wi-Fi the app asks for 20 in their place\n"
             "audio_packet_ms=%d\n"
             "# audio_on_host=1 plays sound on the PC (the host still sends the audio stream)\n"
             "audio_on_host=%d\n"
@@ -236,6 +252,9 @@ bool config_save(const char *path, const Config *c)
             c->codec == CODEC_MPEG2 ? "mpeg2" : "h264", c->logging ? 1 : 0, c->ui_sounds ? 1 : 0, c->theme, c->auto_resume ? 1 : 0, c->hud_corner, c->hud_size,
             c->rumble ? 1 : 0, c->wake_on_lan ? 1 : 0, c->host_mac, c->app_id,
             c->show_recent ? 1 : 0, c->menu_combo, c->pointer_speed);
+    fprintf(f, "# look: how the menus are drawn, fresh or classic\nlook=%s\n", c->look == LOOK_CLASSIC ? "classic" : "fresh");
+    fprintf(f, "# play_picture: what Fresh's Play shows on the right, cover or moon\nplay_picture=%s\n",
+            c->play_moon ? "moon" : "cover");
     for (int i = 0; i < CONFIG_RECENT && c->recent_name[i][0]; i++)
         fprintf(f, "recent%d=%d|%s\n", i + 1, c->recent_id[i], c->recent_name[i]);
     fclose(f);

@@ -12,7 +12,7 @@ An unofficial [Moonlight](https://moonlight-stream.org) client for RGH/JTAG cons
 [Sunshine](https://github.com/LizardByte/Sunshine) and its forks (Apollo, Vibeshine), and is built with the
 open-source [xsdk](https://github.com/xenosworks/xsdk): no Microsoft XDK involved.
 
-![A tour of the menus](docs/screenshots/v0.3/tour.webp)
+![A tour of the menus](docs/screenshots/v0.4/tour.webp)
 
 ## ✨ Features
 
@@ -22,10 +22,11 @@ open-source [xsdk](https://github.com/xenosworks/xsdk): no Microsoft XDK involve
 - A stats HUD: frame rate, latency by stage, ping, packet loss, CPU and GPU load and temperatures. 🥵
 - Low-latency display, and controllers read 500 times a second.
 - Mouse and keyboard from the controller: a mouse mode, typing with the on-screen keyboard, and keys like Esc,
-  Alt + Tab and Guide, all in the stream menu (**X** there switches mouse mode, **Y** types).
+  Alt + Tab and Guide, in the stream menu's *Mouse and keyboard*.
 - Finds your PC on the network, shows app covers, and keeps your recent apps one press away.
+- An estimate of the latency, PC to TV, for the settings you choose.
 - Wake-on-LAN, reconnect on start, and four colour themes.
-- A menu made for a controller and a TV.
+- A menu made for a controller and a TV, in two looks: Fresh (covers first) and Classic (the night sky).
 
 Not supported: HEVC, AV1 and HDR. The console is older than all three.
 
@@ -38,19 +39,20 @@ Sunshine, Apollo or Vibeshine on the same network.
    [Releases](https://github.com/everythings-gonna-be-alright/moonlight360/releases).
 2. **Copy** it to a folder on the console, for example `Hdd1:\Apps\Moonlight360\` (FTP or a FAT32 USB stick), and
    launch it.
-3. **Set the PC.** On the *Play* tab, set *Host PC* to the PC's IP address.
+3. **Find the PC.** On *Play*, press **A** on *Find your PC* and choose it, or type its IP address.
 4. **Pair, once.** Pick *Start streaming* and type the 4-digit PIN from the console into the host's web UI
    (`https://localhost:47990` → *PIN*).
 5. **Play.** Hold **Back** for a second to open the stream menu (another button or combination can be set in
-   *Other → Stream menu*).
+   *Settings → Controls → Stream menu*).
 
 Settings are saved to `moonlight.ini` next to the `.xex`. If something goes wrong, `moonlight360.log` says why.
 
 ## ⚡ Best settings and performance
 
 > [!WARNING]
-> **Wi-Fi has problems right now.** Over the console's Wi-Fi a stream can stop, and the console then stops
-> receiving anything until it's rebooted. The cause isn't found yet, so there's no fix. Use Ethernet for now.
+> **On Wi-Fi, prefer a cable.** The console's Wi-Fi adapter can stop receiving until a reboot. Two triggers are
+> known and avoided on Wi-Fi: rumble passed to the controllers (none on Wi-Fi) and short audio packets (always
+> 20 ms on Wi-Fi). It carries about 25 Mbit/s, so keep the bitrate at or under that.
 
 ### Recommended
 
@@ -70,7 +72,7 @@ A lean stream leaves out the deblocking filter and sub-pixel motion: half of the
 
 **On the console:**
 
-3. **1920×1080**, **60 fps**, *Fast decode* off.
+3. **1920×1080**, **60 fps**, *Skip deblocking* off.
 4. Start a new stream. The stats HUD shows `CAVLC lean` when it worked.
 
 ### No spare CPU on the PC?
@@ -78,13 +80,13 @@ A lean stream leaves out the deblocking filter and sub-pixel motion: half of the
 Keep the hardware encoder, with *Prefer CAVLC over CABAC* on:
 
 - 720p or 1600×900 at 60 fps
-- 1080p at 30 fps, with *Fast decode* on
+- 1080p at 30 fps, with *Skip deblocking* on
 
 ### Decode time per 1080p frame
 
 60 fps needs under 16.7 ms a frame, 30 fps under 33 ms.
 
-| Stream | On the PC | *Fast decode* | at 30 fps | at 60 fps |
+| Stream | On the PC | *Skip deblocking* | at 30 fps | at 60 fps |
 |---|---|---|---:|---:|
 | 🪶 **Lean** | Encoder **Software**, preset **ultrafast** | off | 17 ms | **12 ms** |
 | Hardware encoder | *Prefer CAVLC over CABAC* | on | 20 ms | 15 ms |
@@ -92,7 +94,8 @@ Keep the hardware encoder, with *Prefer CAVLC over CABAC* on:
 
 ### Experimental
 
-- 🧪 **MPEG-2** (*Video* → *Video codec*): needs Sunshine with `mpeg2_mode = 2`; untested on a real host.
+- 🧪 **MPEG-2** (*Settings* → *Quality* → *Video codec*): needs Sunshine with `mpeg2_mode = 2`; untested on a real
+  host.
 
 ### Under the hood
 

@@ -428,6 +428,141 @@ static void press(uint16_t buttons)
     menu_update(&in);
 }
 
+/* Fresh: frames drawn until the motion settles, then the shot. */
+static void shot_settled(const char *dir, const char *name, int frames)
+{
+    for (int i = 0; i < frames; i++) {
+        clear();
+        gfx_frame_begin(W, H);
+        menu_draw(W, H);
+    }
+    char path[512];
+    snprintf(path, sizeof path, "%s/%s.png", dir, name);
+    write_png(path);
+}
+
+/* The Fresh look's screens, as fresh-*.png. */
+static void fake_game(void);
+
+static void fresh_shots(const char *dir)
+{
+    static Config config = { .host = "192.168.1.100", .width = 1920, .height = 1080, .fps = 60,
+                             .bitrate_kbps = 30000, .fast_decode = false, .low_latency = true, .decode = true,
+                             .draw = true, .audio_packet_ms = 20, .packet_size = 1392, .slices = 24, .app_id = 3,
+                             .recent_id = { 3, 6, 4, 5 }, .show_recent = true, .ui_sounds = true,
+                             .stats_mode = STATS_COMPACT, .look = LOOK_FRESH,
+                             .recent_name = { "Red Dead Redemption 2", "Cyberpunk 2077", "Grand Theft Auto VI",
+                                              "Forza Horizon 6" } };
+    snprintf(config.app, sizeof config.app, "Red Dead Redemption 2");
+    menu_open(&config, "moonlight.ini");
+    /* The startup: the moon rising, the crescent and the name; then any button skips the rest. */
+    shot_settled(dir, "fresh-s1-startup-moon", 18);
+    shot_settled(dir, "fresh-s2-startup-crescent", 40);
+    shot_settled(dir, "fresh-s3-startup-going", 16);
+    shot_settled(dir, "fresh-s4-startup-clearing", 12);
+    press(INPUT_GAMEPAD_A);
+    shot_settled(dir, "fresh-1-play", 40);
+    press(INPUT_GAMEPAD_DPAD_UP);
+    shot_settled(dir, "fresh-2-quality-line", 10);
+    press(INPUT_GAMEPAD_DPAD_DOWN);
+    press(INPUT_GAMEPAD_DPAD_DOWN);
+    press(INPUT_GAMEPAD_DPAD_DOWN);
+    shot_settled(dir, "fresh-4-recent", 60);
+    press(INPUT_GAMEPAD_DPAD_RIGHT);
+    press(INPUT_GAMEPAD_DPAD_RIGHT);
+    press(INPUT_GAMEPAD_DPAD_RIGHT);
+    shot_settled(dir, "fresh-4b-all-apps", 60);
+    press(INPUT_GAMEPAD_B);
+    menu_set_message("Could not reach Sunshine at 192.168.1.100:\ncURL error: Could not connect to server (-5)\n"
+                     "Check the Host PC setting.");
+    shot_settled(dir, "fresh-5-error", 60);
+    menu_set_message("Disconnected. \"Red Dead Redemption 2\" is still running on the PC: Connect resumes it.");
+    shot_settled(dir, "fresh-5b-message", 20);
+    menu_set_message(NULL);
+    press(INPUT_GAMEPAD_RIGHT_SHOULDER);   /* Settings: on the sections */
+    shot_settled(dir, "fresh-6-settings-sections", 20);
+    press(INPUT_GAMEPAD_A);                /* into Quality */
+    shot_settled(dir, "fresh-6a-quality", 20);
+    press(INPUT_GAMEPAD_DPAD_DOWN);
+    press(INPUT_GAMEPAD_DPAD_DOWN);
+    shot_settled(dir, "fresh-6b-bitrate", 20);
+    press(INPUT_GAMEPAD_B);                /* back to the sections */
+    press(INPUT_GAMEPAD_DPAD_DOWN);
+    shot_settled(dir, "fresh-7-pc", 20);
+    press(INPUT_GAMEPAD_A);                /* into PC, down to Forget this PC */
+    press(INPUT_GAMEPAD_DPAD_DOWN);
+    press(INPUT_GAMEPAD_DPAD_DOWN);
+    press(INPUT_GAMEPAD_DPAD_DOWN);
+    shot_settled(dir, "fresh-7b-pc-forget", 20);
+    press(INPUT_GAMEPAD_B);
+    press(INPUT_GAMEPAD_DPAD_DOWN);
+    press(INPUT_GAMEPAD_DPAD_DOWN);
+    press(INPUT_GAMEPAD_A);                /* into Sound */
+    shot_settled(dir, "fresh-8-sound", 20);
+    press(INPUT_GAMEPAD_B);
+    press(INPUT_GAMEPAD_DPAD_DOWN);
+    press(INPUT_GAMEPAD_A);
+    shot_settled(dir, "fresh-9-look", 20);
+    press(INPUT_GAMEPAD_RIGHT_SHOULDER);   /* RB: About, from inside a section */
+    shot_settled(dir, "fresh-11-about", 20);
+    press(INPUT_GAMEPAD_RIGHT_SHOULDER);   /* round to Play */
+    press(INPUT_GAMEPAD_LEFT_SHOULDER);    /* LB: About again */
+    press(INPUT_GAMEPAD_LEFT_SHOULDER);    /* LB: Settings, where it was: Look */
+    shot_settled(dir, "fresh-12b-settings-again", 20);
+    config.play_moon = true;               /* Look, Play picture: Moon */
+    press(INPUT_GAMEPAD_LEFT_SHOULDER);    /* LB: Play */
+    shot_settled(dir, "fresh-1b-play-moon", 60);
+    config.play_moon = false;
+
+    static const char *const steps[] = { "Reach PC", "Pair", "Start app", "Stream", "Picture" };
+    for (int i = 0; i < 40; i++) {
+        clear();
+        gfx_frame_begin(W, H);
+        ui_draw_progress(W, H, "Red Dead Redemption 2", "Starting it on 192.168.1.100 at 1080p, 60 fps, 30 Mbps", steps,
+                         5, 2, "Starting \"Red Dead Redemption 2\" at 1920x1080 60 fps, 30000 kbps...");
+    }
+    char path[512];
+    snprintf(path, sizeof path, "%s/fresh-12-connecting.png", dir);
+    write_png(path);
+
+    for (int i = 0; i < 14; i++) {   /* the stream menu, slid in */
+        clear();
+        fake_game();
+        if (i == 0)
+            overlay_open();
+        gfx_frame_begin(W, H);
+        overlay_draw(W, H, "Red Dead Redemption 2", STATS_COMPACT);
+    }
+    snprintf(path, sizeof path, "%s/fresh-13-stream-menu.png", dir);
+    write_png(path);
+    {   /* down to Mouse and keyboard, A, then down onto the keys */
+        int stats = STATS_COMPACT;
+        static const uint16_t keys[] = { INPUT_GAMEPAD_DPAD_DOWN, INPUT_GAMEPAD_A,
+                                         INPUT_GAMEPAD_DPAD_DOWN, INPUT_GAMEPAD_DPAD_DOWN, INPUT_GAMEPAD_DPAD_DOWN,
+                                         INPUT_GAMEPAD_DPAD_RIGHT };
+        for (size_t k = 0; k < sizeof keys / sizeof keys[0]; k++) {
+            InputState in;
+            memset(&in, 0, sizeof in);
+            in.connected[0] = true;
+            in.pressed[0] = keys[k];
+            overlay_update(&in, &stats);
+        }
+        clear();
+        fake_game();
+        gfx_frame_begin(W, H);
+        overlay_draw(W, H, "Red Dead Redemption 2", STATS_COMPACT);
+        snprintf(path, sizeof path, "%s/fresh-14-mouse-and-keys.png", dir);
+        write_png(path);
+    }
+    overlay_close();
+
+    static Config empty = { .app = "Desktop", .width = 1280, .height = 720, .fps = 30, .bitrate_kbps = 8000,
+                            .decode = true, .draw = true, .audio_packet_ms = 20, .packet_size = 1392, .slices = 24,
+                            .look = LOOK_FRESH };
+    menu_open(&empty, "moonlight.ini");
+    shot_settled(dir, "fresh-0-welcome", 20);
+}
+
 static void shot_menu(const char *dir, const char *name)
 {
     char path[512];
@@ -622,6 +757,7 @@ static void tour_connect(const char *dir, int *frame, int *written)
         net.interval_ms[k] = 1000.0f / 60 + (float)((k * 37) % 5) - 2.0f;
     static HudHistory hist = { .latency_count = HUD_HISTORY, .load_count = HUD_HISTORY };
     const HudStats hud = { .ready = true, .fps = 60, .target_fps = 60, .width = 1920, .height = 1080, .cabac = 0,
+                           .qp = -1,
                            .stream_kind = STREAM_LEAN, .host_ms = 4, .net_ms = 4, .decode_ms = 12, .display_ms = 14 };
     PerfReadings perf;
     perf_get(&perf);
@@ -664,6 +800,78 @@ static void tour_connect(const char *dir, int *frame, int *written)
                              "on 192.168.1.100  \xC2\xB7  1920\xC3\x97" "1080  \xC2\xB7  60 fps  \xC2\xB7  30 Mbps",
                              step_names, 5, step, details[step]);
         }
+        snprintf(path, sizeof path, "%s/tour-%04d.png", dir, (*written)++);
+        write_png(path);
+    }
+}
+
+/* ---- the Fresh look's tour ---- */
+
+/* The menus through steps, as tour_menu, but one gfx_frame_begin a frame (the menus' clock at its real 60 a second)
+ * and nothing faded: Fresh's own startup and fades do it. */
+static void tour_fresh_menu(const char *dir, const TourStep *steps, size_t count, int *frame, int *written)
+{
+    char path[512];
+    for (size_t i = 0; i < count; i++)
+        for (int f = 0; f <= steps[i].wait; f++, (*frame)++) {
+            InputState in;
+            memset(&in, 0, sizeof in);
+            in.connected[0] = true;
+            in.pressed[0] = f == 0 ? steps[i].button : 0;
+            in.buttons[0] = in.pressed[0];
+            clear();
+            gfx_frame_begin(W, H);
+            menu_update(&in);
+            menu_draw(W, H);
+            if (*frame % tour_stride)
+                continue;
+            snprintf(path, sizeof path, "%s/tour-%04d.png", dir, (*written)++);
+            write_png(path);
+        }
+}
+
+/* Connecting, Fresh: the five steps in turn under the game's name; the screen fades to the background and the game
+ * fades in from it (as main.c's draw_picture); the game with its compact stats; out to the background. */
+static void tour_fresh_connect(const char *dir, int *frame, int *written)
+{
+    static const char *const step_names[] = { "Reach PC", "Pair", "Start app", "Stream", "Picture" };
+    static const char *const details[] = { "Contacting 192.168.1.100...", "Paired.",
+                                           "Starting \"Red Dead Redemption 2\" at 1920x1080 60 fps, 30000 kbps...",
+                                           "RTSP handshake...", "Waiting for the first frame from the PC\xE2\x80\xA6" };
+    static NetStats net = { .rtt_ms = 1, .budget_ms = 1000.0f / 60, .count = NET_HISTORY };
+    for (int k = 0; k < NET_HISTORY; k++)
+        net.interval_ms[k] = 1000.0f / 60 + (float)((k * 37) % 5) - 2.0f;
+    static HudHistory hist = { .latency_count = HUD_HISTORY, .load_count = HUD_HISTORY };
+    const HudStats hud = { .ready = true, .fps = 60, .target_fps = 60, .width = 1920, .height = 1080, .cabac = 0,
+                           .qp = -1, .stream_kind = STREAM_LEAN, .host_ms = 4, .net_ms = 4, .decode_ms = 12,
+                           .display_ms = 20 };
+    PerfReadings perf;
+    perf_get(&perf);
+    enum { STEP = 34, STEPS = 5 * STEP, OUT = 14, IN = 22, GAME = 150, FADE = 18 };
+    const int total = STEPS + OUT + IN + GAME + FADE;
+    char path[512];
+    for (int f = 0; f < total; f++, (*frame)++) {
+        clear();
+        gfx_frame_begin(W, H);
+        const int step = f / STEP > 4 ? 4 : f / STEP;
+        if (f < STEPS + OUT) {
+            ui_draw_progress(W, H, "Red Dead Redemption 2", "Starting it on 192.168.1.100 at 1080p, 60 fps, 30 Mbps",
+                             step_names, 5, step, details[step]);
+            if (f >= STEPS)
+                ui_draw_veil(W, H, (float)(f - STEPS) / OUT);
+        } else {
+            const int g = f - STEPS - OUT;
+            fake_game_at((float)g / 60.0f);
+            gfx_frame_begin(W, H);
+            ui_draw_stats(STATS_COMPACT, HUD_TOP_LEFT, HUD_MEDIUM, &hud, &perf, &net, &hist);
+            if (g < IN)
+                ui_draw_veil(W, H, 1.0f - (float)g / IN);
+            const int left = total - f;
+            if (left < FADE)
+                ui_draw_veil(W, H, 1.0f - (float)left / FADE);
+        }
+        if (*frame % tour_stride)
+            continue;
         snprintf(path, sizeof path, "%s/tour-%04d.png", dir, (*written)++);
         write_png(path);
     }
@@ -1045,52 +1253,82 @@ int main(int argc, char **argv)
 {
     const char *dir = argc > 1 ? argv[1] : ".";
     gfx_init();
+    if (argc > 2 && !strcmp(argv[2], "connect")) {
+        /* Fresh's connecting screen in motion: a step every 50 frames; every 2nd frame as connect-NNNN.png. */
+        static Config c = { .look = LOOK_FRESH, .host = "192.168.1.100", .width = 1920, .height = 1080, .fps = 60,
+                            .bitrate_kbps = 30000, .decode = true, .draw = true, .app_id = 3, .show_recent = true,
+                            .recent_id = { 3, 6, 4, 5 },
+                            .recent_name = { "Red Dead Redemption 2", "Cyberpunk 2077", "Grand Theft Auto VI",
+                                             "Forza Horizon 6" } };
+        snprintf(c.app, sizeof c.app, "Red Dead Redemption 2");
+        menu_open(&c, "moonlight.ini");
+        static const char *const steps[] = { "Reach PC", "Pair", "Start app", "Stream", "Picture" };
+        static const char *const details[] = { "Contacting 192.168.1.100...", "Finding \"Red Dead Redemption 2\"...",
+                                               "Starting \"Red Dead Redemption 2\" at 1920x1080 60 fps, 30000 kbps...",
+                                               "RTSP handshake...", "Waiting for the first frame from the PC\xE2\x80\xA6" };
+        for (int f = 0; f < 280; f++) {
+            const int step = f / 50 > 4 ? 4 : f / 50;
+            clear();
+            gfx_frame_begin(W, H);
+            ui_draw_progress(W, H, "Red Dead Redemption 2", "Starting it on 192.168.1.100 at 1080p, 60 fps, 30 Mbps",
+                             steps, 5, step, details[step]);
+            if (f % 2 == 0) {
+                char path[512];
+                snprintf(path, sizeof path, "%s/connect-%04d.png", dir, f / 2);
+                write_png(path);
+            }
+        }
+        return 0;
+    }
+    if (argc > 2 && !strcmp(argv[2], "fresh")) {
+        fresh_shots(dir);
+        return 0;
+    }
     if (argc > 2 && !strcmp(argv[2], "tour")) {
         /* A walk through the app for the README: tour-NNNN.png, 60 a second, or 30 with "tour 2". */
         if (argc > 3)
             tour_stride = atoi(argv[3]) > 0 ? atoi(argv[3]) : 1;
-        static Config c = { .host = "192.168.1.100", .app = "Red Dead Redemption 2", .width = 1920, .height = 1080,
-                            .fps = 60, .bitrate_kbps = 30000, .decode = true, .draw = true, .audio_packet_ms = 20,
-                            .packet_size = 1392, .slices = 24, .app_id = 3, .low_latency = true, .stats_mode = 1,
-                            .host_mac = "a8:5e:45:1c:2b:7f",
-                            .ui_sounds = true, .rumble = true, .show_recent = true,
-                            .recent_id = { 3, 6, 4, 5 },
+        static Config c = { .look = LOOK_FRESH, .host = "192.168.1.100", .app = "Red Dead Redemption 2", .width = 1920,
+                            .height = 1080, .fps = 60, .bitrate_kbps = 30000, .decode = true, .draw = true,
+                            .audio_packet_ms = 20, .packet_size = 1392, .slices = 24, .app_id = 3, .low_latency = true,
+                            .stats_mode = 1, .host_mac = "a8:5e:45:1c:2b:7f", .ui_sounds = true, .rumble = true,
+                            .show_recent = true, .recent_id = { 3, 6, 4, 5 },
                             .recent_name = { "Red Dead Redemption 2", "Cyberpunk 2077", "Grand Theft Auto VI",
                                              "Forza Horizon 6" } };
         menu_open(&c, "moonlight.ini");
         int frame = 0, written = 0;
-        /* Intro: the title; the menus' fade at the end leads back into it as the animation loops. */
-        tour_card(dir, 110, NULL, NULL, &frame, &written);
-        /* Act one: home, the cursor on Start streaming, A; connecting, the PIN, the stream. */
-        static const TourStep open[] = { { 0, 70 }, { INPUT_GAMEPAD_A, 28 } };
-        tour_menu(dir, open, sizeof open / sizeof open[0], 16, 0, &frame, &written);
-        tour_connect(dir, &frame, &written);
-        /* Mouse mode, on the PC's desktop. */
-        tour_desktop(dir, &frame, &written);
-        /* Act two: the features, one a beat, building to the themes' colour; it ends there, fading into the title as
-         * the animation loops. */
+        /* Act one: the startup (the moon, the crescent, the name), Play, the recent apps, Settings: Quality with its
+         * latency estimate, Look's Play picture set to the moon and back; then Start streaming. */
         static const TourStep menus[] = {
-            { 0, 44 },                                                            /* Play: the moon */
-            { INPUT_GAMEPAD_DPAD_RIGHT, 22 }, { INPUT_GAMEPAD_DPAD_RIGHT, 16 },   /* Recent */
-            { INPUT_GAMEPAD_DPAD_RIGHT, 16 }, { INPUT_GAMEPAD_B, 16 },
-            { INPUT_GAMEPAD_DPAD_DOWN, 12 }, { INPUT_GAMEPAD_A, 40 },             /* the covers */
-            { INPUT_GAMEPAD_DPAD_RIGHT, 14 }, { INPUT_GAMEPAD_DPAD_RIGHT, 14 },
-            { INPUT_GAMEPAD_DPAD_LEFT, 14 }, { INPUT_GAMEPAD_DPAD_LEFT, 18 },
-            { INPUT_GAMEPAD_B, 16 },
-            { INPUT_GAMEPAD_RIGHT_SHOULDER, 26 },                                 /* Video: up to 30 Mbps */
-            { INPUT_GAMEPAD_DPAD_DOWN, 12 }, { INPUT_GAMEPAD_DPAD_DOWN, 12 },
-            { INPUT_GAMEPAD_DPAD_LEFT, 12 }, { INPUT_GAMEPAD_DPAD_LEFT, 16 },
-            { INPUT_GAMEPAD_DPAD_RIGHT, 12 }, { INPUT_GAMEPAD_DPAD_RIGHT, 32 },
-            { INPUT_GAMEPAD_RIGHT_SHOULDER, 30 },                                 /* Network: Wake the PC on */
-            { INPUT_GAMEPAD_A, 34 },
-            { INPUT_GAMEPAD_RIGHT_SHOULDER, 20 },                                 /* Other: the themes */
-            { INPUT_GAMEPAD_DPAD_DOWN, 7 }, { INPUT_GAMEPAD_DPAD_DOWN, 7 }, { INPUT_GAMEPAD_DPAD_DOWN, 7 },
-            { INPUT_GAMEPAD_DPAD_DOWN, 7 }, { INPUT_GAMEPAD_DPAD_DOWN, 7 }, { INPUT_GAMEPAD_DPAD_DOWN, 20 },
-            { INPUT_GAMEPAD_DPAD_RIGHT, 26 }, { INPUT_GAMEPAD_DPAD_RIGHT, 26 },
-            { INPUT_GAMEPAD_DPAD_RIGHT, 26 }, { INPUT_GAMEPAD_DPAD_RIGHT, 40 },   /* the last beat: held, then the end */
+            { 0, 100 },                                                     /* the startup, then Play */
+            { 0, 50 },
+            { INPUT_GAMEPAD_DPAD_DOWN, 44 },                                /* Recent: the page follows */
+            { INPUT_GAMEPAD_DPAD_RIGHT, 40 }, { INPUT_GAMEPAD_DPAD_RIGHT, 40 },
+            { INPUT_GAMEPAD_DPAD_UP, 26 },
+            { INPUT_GAMEPAD_RIGHT_SHOULDER, 40 },                           /* Settings, on its sections */
+            { INPUT_GAMEPAD_A, 18 },                                        /* Quality */
+            { INPUT_GAMEPAD_DPAD_DOWN, 10 }, { INPUT_GAMEPAD_DPAD_DOWN, 24 },   /* Bitrate, and the estimate */
+            { INPUT_GAMEPAD_DPAD_RIGHT, 9 }, { INPUT_GAMEPAD_DPAD_RIGHT, 9 }, { INPUT_GAMEPAD_DPAD_RIGHT, 9 },
+            { INPUT_GAMEPAD_DPAD_RIGHT, 9 }, { INPUT_GAMEPAD_DPAD_RIGHT, 30 },
+            { INPUT_GAMEPAD_DPAD_LEFT, 7 }, { INPUT_GAMEPAD_DPAD_LEFT, 7 }, { INPUT_GAMEPAD_DPAD_LEFT, 7 },
+            { INPUT_GAMEPAD_DPAD_LEFT, 7 }, { INPUT_GAMEPAD_DPAD_LEFT, 20 },
+            { INPUT_GAMEPAD_B, 16 },                                        /* the sections: PC, Controls, Sound, Look */
+            { INPUT_GAMEPAD_DPAD_DOWN, 22 }, { INPUT_GAMEPAD_DPAD_DOWN, 14 }, { INPUT_GAMEPAD_DPAD_DOWN, 14 },
+            { INPUT_GAMEPAD_DPAD_DOWN, 22 },
+            { INPUT_GAMEPAD_A, 14 }, { INPUT_GAMEPAD_DPAD_DOWN, 22 },       /* Look: Play picture */
+            { INPUT_GAMEPAD_DPAD_RIGHT, 26 },                               /* the moon */
+            { INPUT_GAMEPAD_LEFT_SHOULDER, 80 },                            /* Play, with the moon and its sky */
+            { INPUT_GAMEPAD_RIGHT_SHOULDER, 16 }, { INPUT_GAMEPAD_A, 12 },  /* back to the cover */
+            { INPUT_GAMEPAD_DPAD_RIGHT, 20 },
+            { INPUT_GAMEPAD_LEFT_SHOULDER, 44 },                            /* Play */
+            { INPUT_GAMEPAD_A, 28 },                                        /* Start streaming */
         };
-        tour_menu(dir, menus, sizeof menus / sizeof menus[0], 16, 0, &frame, &written);
-        /* The end: all of it was on an Xbox 360. */
+        tour_fresh_menu(dir, menus, sizeof menus / sizeof menus[0], &frame, &written);
+        /* Act two: connecting, the game coming in, its stats. */
+        tour_fresh_connect(dir, &frame, &written);
+        /* Mouse mode, on the PC's desktop, from the stream menu. */
+        tour_desktop(dir, &frame, &written);
+        /* The end: all of it was on an Xbox 360; it fades to the background the startup rises from as it loops. */
         tour_outro(dir, &frame, &written);
         printf("%d frames\n", written);
         return 0;
@@ -1098,7 +1336,7 @@ int main(int argc, char **argv)
     if (argc > 4 && !strcmp(argv[2], "sky")) {
         /* The Play tab's sky from argv[3] to argv[4] seconds (the clock run on to the start without drawing; an event
          * starts on the first frame it's due), every quarter second as sky-SSS.ss.png: for the rare events. */
-        static Config sky = { .host = "192.168.1.100", .app = "Desktop", .width = 1280, .height = 720, .fps = 30,
+        static Config sky = { .look = LOOK_CLASSIC, .host = "192.168.1.100", .app = "Desktop", .width = 1280, .height = 720, .fps = 30,
                               .bitrate_kbps = 8000, .decode = true, .draw = true, .audio_packet_ms = 20,
                               .packet_size = 1392, .slices = 6 };
         menu_open(&sky, "moonlight.ini");
@@ -1120,7 +1358,7 @@ int main(int argc, char **argv)
     }
     if (argc > 3 && !strcmp(argv[2], "moon")) {
         /* The Play tab's sky over time: every third frame (20 a second) of argv[3] seconds, as moon-NNNN.png. */
-        static Config sky = { .host = "192.168.1.100", .app = "Desktop", .width = 1280, .height = 720, .fps = 30,
+        static Config sky = { .look = LOOK_CLASSIC, .host = "192.168.1.100", .app = "Desktop", .width = 1280, .height = 720, .fps = 30,
                               .bitrate_kbps = 8000, .decode = true, .draw = true, .audio_packet_ms = 20,
                               .packet_size = 1392, .slices = 6 };
         menu_open(&sky, "moonlight.ini");
@@ -1140,7 +1378,7 @@ int main(int argc, char **argv)
     static Config config = { .host = "192.168.1.100", .app = "Desktop", .width = 1920, .height = 1080, .fps = 60,
                              .bitrate_kbps = 20000, .fast_decode = false, .decode = true, .draw = true,
                              .audio_packet_ms = 20, .packet_size = 1392, .slices = 24, .app_id = 3,
-                             .recent_id = { 3, 6, 4, 5 }, .show_recent = true,
+                             .recent_id = { 3, 6, 4, 5 }, .show_recent = true, .look = LOOK_CLASSIC,
                              .recent_name = { "Red Dead Redemption 2", "Cyberpunk 2077", "Grand Theft Auto VI",
                                               "Forza Horizon 6" } };
     snprintf(config.app, sizeof config.app, "Red Dead Redemption 2");
@@ -1279,6 +1517,7 @@ int main(int argc, char **argv)
     for (int i = 0; i < NET_HISTORY; i++)
         net.interval_ms[i] = 1000.0f / 60 + (float)((i * 37) % 5) - 2.0f;
     const HudStats hud = { .ready = true, .fps = 59, .target_fps = 60, .width = 1920, .height = 1080, .cabac = 0,
+                           .qp = -1,
                            .stream_kind = STREAM_LEAN, .host_ms = 4, .net_ms = 4, .decode_ms = 12,
                            .display_ms = 20 };
     static HudHistory hist = { .latency_count = HUD_HISTORY, .load_count = HUD_HISTORY };
@@ -1322,6 +1561,7 @@ int main(int argc, char **argv)
     bad.lost_before[71] = true;
     bad.lost_before[72] = true;
     const HudStats troubled = { .ready = true, .fps = 26, .target_fps = 30, .width = 1600, .height = 900, .cabac = 0,
+                                .qp = -1,
                                 .host_ms = 5, .net_ms = 14, .decode_ms = 29, .display_ms = 25, .dropped = 3,
                                 .audio_gaps = 4 };
     clear();
@@ -1332,7 +1572,8 @@ int main(int argc, char **argv)
     write_png(path);
 
     static Config empty = { .app = "Desktop", .width = 1280, .height = 720, .fps = 30, .bitrate_kbps = 8000,
-                            .decode = true, .draw = true, .audio_packet_ms = 20, .packet_size = 1392, .slices = 24 };
+                            .decode = true, .draw = true, .audio_packet_ms = 20, .packet_size = 1392, .slices = 24,
+                            .look = LOOK_CLASSIC };
     menu_open(&empty, "moonlight.ini");
     shot_menu(dir, "0-welcome");
 

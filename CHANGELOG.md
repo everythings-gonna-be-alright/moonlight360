@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.4.0
+
+- **Fresh, a new look,** the default; the old one stays as Classic (Settings → Look).
+  - **Play:** the game A streams, big, its cover lighting the page in its colour, or the moon and its night sky (Look → Play picture); the quality line (A opens Settings → Quality); the other recent apps under it, the page following the cursor onto them; All apps; X changes the PC.
+  - **Settings:** sections at the left (Quality, PC, Controls, Sound, Look, Advanced), the rows, and the selected one explained beside them. LB and RB step through Play, Settings and About.
+  - **Quality:** an estimated latency, PC to TV, for the settings chosen (PC, network, decoding, TV), and whether decoding keeps up.
+  - **Connecting:** the five steps along a track that fills, the picture fading in instead of cutting in.
+  - **Stream menu:** in the middle; Resume, Mouse and keyboard, Stats, Leave stream, Quit (A held for a second). B, or the button that opened it, resumes.
+  - **Startup:** stars, the moon rising and turning to a crescent, the name. Any button skips it.
+  - Failures say what went wrong and what to do, with Try again; with no PC yet, Find your PC.
+- **Forget this PC** (Settings → PC, A held): its address, its MAC and the recent apps go.
+- **Wi-Fi:** the console's Wi-Fi adapter stopped receiving until a reboot when the controllers rumbled during a stream, or with short audio packets. On Wi-Fi the app now passes no rumble to the controllers and always asks for 20 ms audio packets; it warns past 25 Mbps, about what the console's Wi-Fi carries.
+- **Bitrate up to 70 Mbps** (past 50 untried: the row warns).
+- **Fast decode is now Skip deblocking,** for what it does.
+- **Stats:** the frame's quantiser (QP) in the detailed view.
+- **Decoding:** each frame's planes laid out so the CPU's cache holds more of them.
+- Audio packets in the order 5, 10, 20 ms.
+
 ## v0.3.0
 
 - **New look:** Ubuntu Sans font, smooth Material icons, animated moon, motion, optional menu sounds.

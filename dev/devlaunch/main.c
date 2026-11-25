@@ -43,6 +43,8 @@ const XsdkNetworkLimits xsdk_network_limits = {
 };
 
 enum { MAX_FILES = 16, SCREEN_CHARS = 4096 };
+/* What a slow or failed wait for the network at boot saw (wait_for_network); uploaded with the other logs. */
+#define NETBOOT_LOG "netboot.log"
 static const uint32_t CLEAR_ARGB = 0xFF101820, TEXT_ARGB = 0xFFFFFFFF;
 
 static char server_ip[64];
@@ -51,6 +53,7 @@ static bool auto_reboot = true;
 static char home_path[160];
 static uint32_t width, height;
 static char screen[SCREEN_CHARS];
+static bool boot_log_on;   /* say() also appends to netboot.log (wait_for_network) */
 
 /* --- the screen ---------------------------------------------------------------------------------------------- */
 
@@ -63,6 +66,13 @@ static void say(const char *fmt, ...)
     vsnprintf(line, sizeof line, fmt, args);
     va_end(args);
     printf("%s\n", line);
+    if (boot_log_on) {   /* line by line: the wait may end in a power-off or in Aurora, not in this code */
+        FILE *f = fopen(NETBOOT_LOG, "a");
+        if (f) {
+            fprintf(f, "%s\n", line);
+            fclose(f);
+        }
+    }
     if (strlen(screen) + strlen(line) + 2 >= sizeof screen)
         screen[0] = 0;
     strcat(screen, line);
@@ -242,6 +252,8 @@ static void upload_logs(void)
         int status = http_post_file(path, e->d_name);
         say("uploaded %s: %s", e->d_name, status == 200 ? "ok" : "FAILED");
         uploaded += status == 200;
+        if (status == 200 && !strcasecmp(e->d_name, NETBOOT_LOG))
+            remove(NETBOOT_LOG);   /* told: the next slow start begins a new one */
     }
     closedir(dir);
     if (!uploaded)
@@ -404,37 +416,106 @@ static void reboot_console(void)
 /* ---- the network at boot ----
  * As DashLaunch's Default this starts with the console: the link and the address can take a while to come up, and
  * talking to the Mac before then only fails (and used to count toward an automatic reboot). So it waits, showing why,
- * for up to NETWORK_WAIT_FRAMES, then goes on either way. */
-enum { NETWORK_WAIT_FRAMES = 120 * 60 };
+ * for up to NETWORK_WAIT_FRAMES, then goes on either way.
+ *
+ * On Wi-Fi the network has been seen to stay down here until Aurora was started once (2026-11-24); what Aurora does
+ * for it isn't known. So while it waits the launcher starts XAM's network over again every so often, as a title that
+ * starts later would, and writes what it saw to netboot.log, which goes to the Mac with the next upload. */
+enum {
+    NETWORK_WAIT_FRAMES = 120 * 60,
+    BOOT_LOG_FROM_FRAMES = 3 * 60,   /* a wait this long is worth a netboot.log */
+    POKE_FRAMES = 20 * 60,           /* a datagram sent, in case the stack waits for a first use */
+    FIRST_KICK_FRAMES = 45 * 60,     /* the network started over: plain, with the "bypass security" flag, plain */
+    KICK_EVERY_FRAMES = 25 * 60,
+};
+static bool network_waited;   /* the wait took long enough, or failed */
+
+/* WSACleanup, XNetCleanup, XNetStartup, WSAStartup: what a title's start does (xsdk src/socket.c builds the 13-byte
+ * XNetStartupParams the same way; its second byte is cfgFlags, 1 for XNET_STARTUP_BYPASS_SECURITY). */
+static void restart_network(int try, uint8_t flags)
+{
+    const uint8_t params[13] = { [0] = 13, [1] = flags, [2] = xsdk_network_limits.datagram_sockets,
+                                 [3] = xsdk_network_limits.stream_sockets, [4] = xsdk_network_limits.receive_kb,
+                                 [5] = xsdk_network_limits.send_kb };
+    static uint8_t wsadata[400];
+    const int32_t wsa_cleanup = NetDll_WSACleanup(XNCALLER_TITLE);
+    const int32_t xnet_cleanup = NetDll_XNetCleanup(XNCALLER_TITLE, NULL);
+    const int32_t xnet_startup = NetDll_XNetStartup(XNCALLER_TITLE, params);
+    const int32_t wsa_startup = NetDll_WSAStartup(XNCALLER_TITLE, 0x0202, wsadata);
+    say("  network started again, try %d, flags %u (cleanup %d %d, startup %d %d)", try, (unsigned)flags,
+        (int)wsa_cleanup, (int)xnet_cleanup, (int)xnet_startup, (int)wsa_startup);
+}
+
+/* One datagram to the server's discard port. */
+static void poke_network(void)
+{
+    const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        say("  poke: no socket (errno %d)", errno);
+        return;
+    }
+    struct sockaddr_in to = { .sin_family = AF_INET, .sin_port = htons(9) };
+    inet_pton(AF_INET, server_ip, &to.sin_addr);
+    const ssize_t sent = sendto(fd, "devlaunch", 9, 0, (struct sockaddr *)&to, sizeof to);
+    say("  poke: a datagram to %s:9 gave %d (errno %d)", server_ip, (int)sent, sent < 0 ? errno : 0);
+    close(fd);
+}
 
 static bool wait_for_network(void)
 {
     say("Waiting for the network... (B: skip)");
-    int last = -2;
+    int last = -2, kicks = 0;
+    uint32_t last_link = ~0u, last_status = ~0u;
     for (int frame = 0; frame < NETWORK_WAIT_FRAMES; frame++) {
         uint32_t link = 0;
         struct in_addr address = { 0 };
         const int link_ret = xsdk_net_link(&link);
         const int address_ret = xsdk_net_address(&address);
+        /* XAM's own answer, with its bits: 0 pending, 0x04 static, 0x08 DHCP, 0x20 a gateway, 0x40 DNS... */
+        XNADDR raw = { 0 };
+        const uint32_t status = link_ret ? ~0u : NetDll_XNetGetTitleXnAddr(XNCALLER_TITLE, &raw);
         if (address_ret == 0 && address.s_addr && (link & XSDK_NET_LINK_ACTIVE)) {
             char text[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &address, text, sizeof text);
             say("Network up: %s, link 0x%02X (%s), after %d s", text, (unsigned)link,
                 link & 0x20 ? "Wi-Fi" : "Ethernet", frame / 60);
+            network_waited = frame >= BOOT_LOG_FROM_FRAMES;
             return true;
         }
+        if (frame == BOOT_LOG_FROM_FRAMES) {
+            /* Slow: from here every line also goes to netboot.log, after what the screen has so far. */
+            FILE *f = fopen(NETBOOT_LOG, "a");
+            if (f) {
+                fprintf(f, "---- a start of the launcher (build " __DATE__ " " __TIME__ ") ----\n%s", screen);
+                fclose(f);
+            }
+            boot_log_on = true;
+        }
         const int now = link_ret ? -1 : !(link & XSDK_NET_LINK_ACTIVE) ? 0 : address_ret == EAGAIN ? 1 : 2;
-        if (now != last) {
-            say(now < 0 ? "  the network won't start" : now == 0 ? "  no link yet (cable or Wi-Fi)"
-                : now == 1 ? "  link up, getting an address..." : "  link up, no address");
+        if (now != last || link != last_link || status != last_status) {
+            say("  %2d s: %s (link 0x%02X, address status 0x%02X, start %d, address %d)", frame / 60,
+                now < 0 ? "the network won't start" : now == 0 ? "no link yet (cable or Wi-Fi)"
+                : now == 1 ? "link up, getting an address..." : "link up, no address",
+                (unsigned)link, (unsigned)status, link_ret, address_ret);
             last = now;
+            last_link = link;
+            last_status = status;
+        }
+        if (frame == POKE_FRAMES)
+            poke_network();
+        if (frame >= FIRST_KICK_FRAMES && (frame - FIRST_KICK_FRAMES) % KICK_EVERY_FRAMES == 0) {
+            kicks++;
+            restart_network(kicks, kicks == 2 ? 1 : 0);
         }
         INPUT_STATE input = { 0 };
-        if (XamInputGetState(0, 0, &input) == ERROR_SUCCESS && (input.gamepad.buttons & INPUT_GAMEPAD_B))
+        if (XamInputGetState(0, 0, &input) == ERROR_SUCCESS && (input.gamepad.buttons & INPUT_GAMEPAD_B)) {
+            say("  skipped with B after %d s", frame / 60);
             break;
+        }
         draw();
     }
     say("No network yet: going on; Y asks the server again.");
+    network_waited = true;
     return false;
 }
 
@@ -688,6 +769,10 @@ int main(void)
     }
     Manifest m;
     bool have = server_ip[0] && show_manifest(&m);
+    if (boot_log_on) {
+        say("  first answer from the Mac: %s", have ? "yes" : "none");
+        boot_log_on = false;
+    }
     if (have && last_run() < 0)
         save_run(m.run);   /* first start: don't run whatever was last bumped, only what comes next */
     if (server_ip[0])

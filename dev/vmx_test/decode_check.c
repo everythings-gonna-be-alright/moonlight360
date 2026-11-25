@@ -1,13 +1,13 @@
 /* Decodes an H.264 clip and prints a checksum of every frame's pixels: run on the PC and, built for PowerPC with the
  * Xenon vector code, under QEMU, the two must print the same (dev/vmx_test/decode.sh).
- * Usage: decode_check clip.h264|clip.m2v threads [skip-deblocking 0/1] [chroma-in-C 0/1]
+ * Usage: decode_check clip.h264|clip.m2v threads [skip-deblocking 0/1] [chroma-in-C 0/1] [tune bits]
  * A .m2v clip is MPEG-2; anything else H.264. */
 #include <libavcodec/avcodec.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-extern int ff_xenon_chroma_c;
+extern int ff_xenon_chroma_c, ff_xenon_tune;
 
 int main(int argc, char **argv)
 {
@@ -22,6 +22,8 @@ int main(int argc, char **argv)
         return 2;
     memset(data + n, 0, 64);
     ff_xenon_chroma_c = argc > 4 && atoi(argv[4]);
+    if (argc > 5)
+        ff_xenon_tune = atoi(argv[5]);   /* the decoder's experiments, by bit (h264dec.h); as built otherwise */
     const size_t name_len = strlen(argv[1]);
     const enum AVCodecID id = name_len > 4 && !strcmp(argv[1] + name_len - 4, ".m2v") ? AV_CODEC_ID_MPEG2VIDEO
                                                                                         : AV_CODEC_ID_H264;

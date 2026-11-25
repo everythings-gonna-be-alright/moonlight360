@@ -70,6 +70,15 @@ static float mouse_x, mouse_y, wheel;   /* movement not sent yet */
 static uint64_t mouse_last_us, mouse_sent_us;
 static uint64_t mouse_full_us;    /* how long the stick has been fully over */
 static atomic_int menu_buttons;   /* the stream menu's buttons: no keys of mouse mode's */
+static atomic_uint events_sent, rumbles;
+static atomic_int fake_per_second, fake_rumble_per_second;
+/* Rumble (input_set_rumble_limit). What the host last asked of each pad waits here while the limit holds it back;
+ * under lock, as is what each pad was last told. */
+static atomic_int rumble_limit = INPUT_RUMBLE_ALL;
+static atomic_uint rumbles_passed;
+static INPUT_VIBRATION rumble_wanted[INPUT_PADS], rumble_told[INPUT_PADS];
+static bool rumble_waiting[INPUT_PADS];
+static uint64_t rumble_passed_us;   /* the input thread's: when it last passed one on */
 static atomic_int pointer_speed = 1;
 
 static uint64_t now_us(void)
@@ -278,12 +287,14 @@ static unsigned send_key_step(uint64_t now)
     return 1;
 }
 
+static void pass_rumble(uint64_t now);
+
 static uint32_t input_thread(void *context)
 {
     (void)context;
     xsdk_thread_set_priority(XSDK_CURRENT_THREAD, INPUT_PRIORITY, NULL);
     uint64_t window_start = now_us();
-    unsigned reads = 0, sends = 0;
+    unsigned reads = 0, sends = 0, counted = 0;   /* counted: how many of sends events_sent already has */
     InputForward was = INPUT_FORWARD_OFF;
     for (;;) {
         InputState state;
@@ -297,6 +308,27 @@ static uint32_t input_thread(void *context)
         pthread_mutex_unlock(&lock);
         reads++;
 
+        /* The test's turning stick (input_set_fake), in place of whatever pad 1 reads. */
+        const int fake = atomic_load(&fake_per_second);
+        if (fake > 0) {
+            const uint64_t step = now * (uint64_t)fake / 1000000;
+            state.connected[0] = true;
+            memset(&state.pad[0], 0, sizeof state.pad[0]);
+            state.pad[0].thumb_rx = (int16_t)((step & 1) ? 20000 : -20000);
+            state.pad[0].thumb_ry = (int16_t)((step & 2) ? 20000 : -20000);
+            state.buttons[0] = 0;
+        }
+        pass_rumble(now);
+        /* The test's rumble commands (input_set_fake_rumble), while a stream runs. */
+        const int fake_rumble = atomic_load(&fake_rumble_per_second);
+        if (fake_rumble > 0 && atomic_load(&forward) != INPUT_FORWARD_OFF) {
+            static uint64_t last_step;
+            const uint64_t step = now * (uint64_t)fake_rumble / 1000000;
+            if (step != last_step) {
+                last_step = step;
+                input_rumble(0, (unsigned short)((step & 1) ? 900 : 600), 0);
+            }
+        }
         const InputForward mode = (InputForward)atomic_load(&forward);
         if (mode != was) {
             if (was == INPUT_FORWARD_MOUSE && mode != INPUT_FORWARD_OFF)
@@ -324,8 +356,11 @@ static uint32_t input_thread(void *context)
             if (mode == INPUT_FORWARD_MOUSE)
                 sends += mouse_update(&state, now);
             sends += send_key_step(now);
+            atomic_store(&events_sent, atomic_load(&events_sent) + sends - counted);
+            counted = sends;
         }
         if (now - window_start >= LOG_EVERY_S * 1000000ULL) {
+            counted = 0;
             if (mode != INPUT_FORWARD_OFF)
                 printf("[I] input: %.0f reads and %.1f input events a second\n",
                        reads * 1e6 / (double)(now - window_start), sends * 1e6 / (double)(now - window_start));
@@ -424,16 +459,94 @@ void input_send_shortcut(InputShortcut shortcut)
     printf("[I] input: shortcut %d sent to the PC\n", (int)shortcut);
 }
 
+unsigned input_events_sent(void)
+{
+    return atomic_load(&events_sent);
+}
+
+unsigned input_rumbles(void)
+{
+    return atomic_load(&rumbles);
+}
+
+void input_set_fake_rumble(int per_second)
+{
+    atomic_store(&fake_rumble_per_second, per_second);
+    if (per_second)
+        printf("[I] input: %d synthetic rumble commands a second while a stream runs (test)\n", per_second);
+}
+
+void input_set_fake(int per_second)
+{
+    atomic_store(&fake_per_second, per_second);
+}
+
+/* Tells the pad, unless it was told the same already. Returns whether it was told. */
+static bool tell_pad(int pad, INPUT_VIBRATION v)
+{
+    pthread_mutex_lock(&lock);
+    const bool same = rumble_told[pad].left_motor_speed == v.left_motor_speed &&
+                      rumble_told[pad].right_motor_speed == v.right_motor_speed;
+    rumble_told[pad] = v;
+    rumble_waiting[pad] = false;
+    pthread_mutex_unlock(&lock);
+    if (same)
+        return false;
+    XamInputSetState((uint32_t)pad, 0, &v);
+    atomic_fetch_add(&rumbles_passed, 1);
+    return true;
+}
+
 void input_rumble(unsigned short controller, unsigned short low, unsigned short high)
 {
+    atomic_fetch_add(&rumbles, 1);
     if (controller >= INPUT_PADS)
         return;
-    INPUT_VIBRATION v = { low, high };
-    XamInputSetState(controller, 0, &v);
+    const INPUT_VIBRATION v = { low, high };
+    const int limit = atomic_load(&rumble_limit);
+    if (limit == INPUT_RUMBLE_ALL) {
+        tell_pad(controller, v);
+    } else if (limit > 0) {   /* the input thread passes the newest on when the limit allows */
+        pthread_mutex_lock(&lock);
+        rumble_wanted[controller] = v;
+        rumble_waiting[controller] = true;
+        pthread_mutex_unlock(&lock);
+    }
+}
+
+/* The input thread's part: one waiting command passed on, if the limit's interval has gone by. */
+static void pass_rumble(uint64_t now)
+{
+    const int limit = atomic_load(&rumble_limit);
+    if (limit <= 0 || now - rumble_passed_us < 1000000ULL / (uint64_t)limit)
+        return;
+    static int next;
+    for (int i = 0; i < INPUT_PADS; i++) {
+        const int pad = (next + i) % INPUT_PADS;
+        pthread_mutex_lock(&lock);
+        const bool waiting = rumble_waiting[pad];
+        const INPUT_VIBRATION v = rumble_wanted[pad];
+        pthread_mutex_unlock(&lock);
+        if (waiting && tell_pad(pad, v)) {
+            rumble_passed_us = now;
+            next = pad + 1;
+            return;
+        }
+    }
+}
+
+void input_set_rumble_limit(int per_second)
+{
+    atomic_store(&rumble_limit, per_second);
+}
+
+unsigned input_rumbles_passed(void)
+{
+    return atomic_load(&rumbles_passed);
 }
 
 void input_stop_rumble(void)
 {
     for (int i = 0; i < INPUT_PADS; i++)
-        input_rumble(i, 0, 0);
+        tell_pad(i, (INPUT_VIBRATION){ 0, 0 });
 }

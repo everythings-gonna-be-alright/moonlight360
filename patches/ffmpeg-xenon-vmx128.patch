@@ -1,5 +1,264 @@
+diff --git a/libavcodec/h264_cavlc.c b/libavcodec/h264_cavlc.c
+index 75e5fb7..12b5613 100644
+--- a/libavcodec/h264_cavlc.c
++++ b/libavcodec/h264_cavlc.c
+@@ -402,16 +402,23 @@ static inline int get_level_prefix(GetBitContext *gb){
+  * @param max_coeff number of coefficients in the block
+  * @return <0 if an error occurred
+  */
+-static int decode_residual(const H264Context *h, H264SliceContext *sl,
++/* moonlight-xbox360: have_token is a constant where this is expanded. Without it, the whole of a block is read, as
++ * FFmpeg does. With it, the block's first code (token: how many coefficients, how many trailing ones) has been read
++ * by the caller, which found coefficients and has stored their count. */
++static av_always_inline int decode_residual_body(const H264Context *h, H264SliceContext *sl,
+                            GetBitContext *gb, int16_t *block, int n,
+                            const uint8_t *scantable, const uint32_t *qmul,
+-                           int max_coeff)
++                           int max_coeff, int have_token, int token)
+ {
+     int level[16];
+     int zeros_left, coeff_token, total_coeff, i, trailing_ones, run_before;
+ 
+     //FIXME put trailing_onex into the context
+ 
++    if (have_token) {
++        coeff_token = token;
++        total_coeff = coeff_token >> 2;
++    } else {
+     if(max_coeff <= 8){
+         if (max_coeff == 4)
+             coeff_token = get_vlc2(gb, chroma_dc_coeff_token_vlc_table,
+@@ -432,6 +439,7 @@ static int decode_residual(const H264Context *h, H264SliceContext *sl,
+ 
+     if(total_coeff==0)
+         return 0;
++    }
+     if(total_coeff > (unsigned)max_coeff) {
+         av_log(h->avctx, AV_LOG_ERROR, "corrupted macroblock %d %d (total_coeff=%d)\n", sl->mb_x, sl->mb_y, total_coeff);
+         return -1;
+@@ -591,20 +599,74 @@ static int decode_residual(const H264Context *h, H264SliceContext *sl,
+     return 0;
+ }
+ 
++static av_noinline int decode_residual(const H264Context *h, H264SliceContext *sl,
++                                       GetBitContext *gb, int16_t *block, int n,
++                                       const uint8_t *scantable, const uint32_t *qmul,
++                                       int max_coeff)
++{
++    return decode_residual_body(h, sl, gb, block, n, scantable, qmul, max_coeff, 0, 0);
++}
++
++static av_noinline int decode_residual_coefs(const H264Context *h, H264SliceContext *sl,
++                                             GetBitContext *gb, int16_t *block, int n,
++                                             const uint8_t *scantable, const uint32_t *qmul,
++                                             int max_coeff, int token)
++{
++    return decode_residual_body(h, sl, gb, block, n, scantable, qmul, max_coeff, 1, token);
++}
++
++/* moonlight-xbox360 (ff_xenon_tune & 64): a block's first code read where the block is asked for, so that a block
++ * without coefficients, which most are, costs no call (26 cycles on Xenon, and a big function's registers saved and
++ * restored). left is the count of the block to the left when the caller has just read that block, or -1: read back
++ * from the cache it would be a load behind its store, about 40 cycles. *total gets this block's count for the same
++ * reason. split is a constant: without it this is FFmpeg's decode_residual. */
++static av_always_inline int residual(const H264Context *h, H264SliceContext *sl,
++                                     GetBitContext *gb, int16_t *block, int n,
++                                     const uint8_t *scantable, const uint32_t *qmul,
++                                     int max_coeff, int split, int left, int *total)
++{
++    int coeff_token;
++    if (!split) {
++        const int ret = decode_residual(h, sl, gb, block, n, scantable, qmul, max_coeff);
++        *total = sl->non_zero_count_cache[scan8[n]];
++        return ret;
++    }
++    if (max_coeff <= 8) {
++        if (max_coeff == 4)
++            coeff_token = get_vlc2(gb, chroma_dc_coeff_token_vlc_table,
++                                   CHROMA_DC_COEFF_TOKEN_VLC_BITS, 1);
++        else
++            coeff_token = get_vlc2(gb, chroma422_dc_coeff_token_vlc_table,
++                                   CHROMA422_DC_COEFF_TOKEN_VLC_BITS, 1);
++    } else {
++        const int index8 = scan8[n >= LUMA_DC_BLOCK_INDEX ? (n - LUMA_DC_BLOCK_INDEX) * 16 : n];
++        int i = (left >= 0 ? left : sl->non_zero_count_cache[index8 - 1]) + sl->non_zero_count_cache[index8 - 8];
++        if (i < 64)
++            i = (i + 1) >> 1;
++        coeff_token = get_vlc2(gb, coeff_token_vlc[i & 31], COEFF_TOKEN_VLC_BITS, 2);
++    }
++    *total = coeff_token >> 2;
++    sl->non_zero_count_cache[scan8[n]] = coeff_token >> 2;
++    if (!(coeff_token >> 2))
++        return 0;
++    return decode_residual_coefs(h, sl, gb, block, n, scantable, qmul, max_coeff, coeff_token);
++}
++
+ static av_always_inline
+ int decode_luma_residual(const H264Context *h, H264SliceContext *sl,
+                          GetBitContext *gb, const uint8_t *scan,
+                          const uint8_t *scan8x8, int pixel_shift,
+-                         int mb_type, int cbp, int p)
++                         int mb_type, int cbp, int p, int split)
+ {
+     int i4x4, i8x8;
++    int total = 0;   /* the block just read has this many coefficients */
+     int qscale = p == 0 ? sl->qscale : sl->chroma_qp[p - 1];
+     if(IS_INTRA16x16(mb_type)){
+         AV_ZERO128(sl->mb_luma_dc[p]+0);
+         AV_ZERO128(sl->mb_luma_dc[p]+8);
+         AV_ZERO128(sl->mb_luma_dc[p]+16);
+         AV_ZERO128(sl->mb_luma_dc[p]+24);
+-        if (decode_residual(h, sl, gb, sl->mb_luma_dc[p], LUMA_DC_BLOCK_INDEX + p, scan, NULL, 16) < 0) {
++        if (residual(h, sl, gb, sl->mb_luma_dc[p], LUMA_DC_BLOCK_INDEX + p, scan, NULL, 16, split, -1, &total) < 0) {
+             return -1; //FIXME continue if partitioned and other return -1 too
+         }
+ 
+@@ -614,8 +676,9 @@ int decode_luma_residual(const H264Context *h, H264SliceContext *sl,
+             for(i8x8=0; i8x8<4; i8x8++){
+                 for(i4x4=0; i4x4<4; i4x4++){
+                     const int index= i4x4 + 4*i8x8 + p*16;
+-                    if( decode_residual(h, sl, gb, sl->mb + (16*index << pixel_shift),
+-                        index, scan + 1, h->ps.pps->dequant4_coeff[p][qscale], 15) < 0 ){
++                    if( residual(h, sl, gb, sl->mb + (16*index << pixel_shift),
++                        index, scan + 1, h->ps.pps->dequant4_coeff[p][qscale], 15, split,
++                        i4x4 & 1 ? total : -1, &total) < 0 ){
+                         return -1;
+                     }
+                 }
+@@ -634,23 +697,32 @@ int decode_luma_residual(const H264Context *h, H264SliceContext *sl,
+                 if(IS_8x8DCT(mb_type)){
+                     int16_t *buf = &sl->mb[64*i8x8+256*p << pixel_shift];
+                     uint8_t *nnz;
++                    int sum = 0;
+                     for(i4x4=0; i4x4<4; i4x4++){
+                         const int index= i4x4 + 4*i8x8 + p*16;
+-                        if( decode_residual(h, sl, gb, buf, index, scan8x8+16*i4x4,
+-                                            h->ps.pps->dequant8_coeff[cqm][qscale], 16) < 0 )
++                        if( residual(h, sl, gb, buf, index, scan8x8+16*i4x4,
++                                     h->ps.pps->dequant8_coeff[cqm][qscale], 16, split,
++                                     i4x4 & 1 ? total : -1, &total) < 0 )
+                             return -1;
++                        sum += total;
+                     }
+                     nnz = &sl->non_zero_count_cache[scan8[4 * i8x8 + p * 16]];
++                    if (split) {
++                        nnz[0] = sum;
++                        new_cbp |= !!sum << i8x8;
++                    } else {
+                     nnz[0] += nnz[1] + nnz[8] + nnz[9];
+                     new_cbp |= !!nnz[0] << i8x8;
++                    }
+                 }else{
+                     for(i4x4=0; i4x4<4; i4x4++){
+                         const int index= i4x4 + 4*i8x8 + p*16;
+-                        if( decode_residual(h, sl, gb, sl->mb + (16*index << pixel_shift), index,
+-                                            scan, h->ps.pps->dequant4_coeff[cqm][qscale], 16) < 0 ){
++                        if( residual(h, sl, gb, sl->mb + (16*index << pixel_shift), index,
++                                     scan, h->ps.pps->dequant4_coeff[cqm][qscale], 16, split,
++                                     i4x4 & 1 ? total : -1, &total) < 0 ){
+                             return -1;
+                         }
+-                        new_cbp |= sl->non_zero_count_cache[scan8[index]] << i8x8;
++                        new_cbp |= total << i8x8;
+                     }
+                 }
+             }else{
+@@ -662,7 +734,35 @@ int decode_luma_residual(const H264Context *h, H264SliceContext *sl,
+     }
+ }
+ 
++static int decode_mb_cavlc(const H264Context *h, H264SliceContext *sl);
++
+ int ff_h264_decode_mb_cavlc(const H264Context *h, H264SliceContext *sl)
++{
++    if ((ff_xenon_tune & 0x380) == 0x180)
++        ff_xenon_touch_written(h, sl);
++    if (!ff_xenon_prof)
++        return decode_mb_cavlc(h, sl);
++    /* A skipped macroblock; or the macroblock's header (type, prediction, motion vectors) up to the time the
++     * parser notes before its coefficients, then those. */
++    uint64_t *const p = ff_xenon_prof_slice[sl - h->slice_ctx];
++    p[XPROF_MID] = 0;
++    const uint64_t t0 = ff_xenon_ticks();
++    const int ret = decode_mb_cavlc(h, sl);
++    const uint64_t t1 = ff_xenon_ticks(), mid = p[XPROF_MID];
++    p[XPROF_MBS]++;
++    if (mid) {
++        p[XPROF_HEAD] += mid - t0;
++        p[XPROF_RESIDUAL] += t1 - mid;
++    } else if (ret >= 0 && IS_SKIP(h->cur_pic.mb_type[sl->mb_xy])) {
++        p[XPROF_SKIP] += t1 - t0;
++        p[XPROF_SKIPPED]++;
++    } else {
++        p[XPROF_HEAD] += t1 - t0;
++    }
++    return ret;
++}
++
++static int decode_mb_cavlc(const H264Context *h, H264SliceContext *sl)
+ {
+     int mb_xy;
+     int partition_count;
+@@ -1063,6 +1163,8 @@ decode_intra_mb:
+     h->cbp_table[mb_xy]= cbp;
+     h->cur_pic.mb_type[mb_xy] = mb_type;
+ 
++    if (ff_xenon_prof)
++        ff_xenon_prof_slice[sl - h->slice_ctx][XPROF_MID] = ff_xenon_ticks();
+     if(cbp || IS_INTRA16x16(mb_type)){
+         int i4x4, i8x8, chroma_idx;
+         int dquant;
+@@ -1096,15 +1198,18 @@ decode_intra_mb:
+             scan    = sl->qscale ? h->zigzag_scan : h->zigzag_scan_q0;
+         }
+ 
+-        if ((ret = decode_luma_residual(h, sl, gb, scan, scan8x8, pixel_shift, mb_type, cbp, 0)) < 0 ) {
++        const int split = ff_xenon_tune & 64;
++        int total;
++        if ((ret = split ? decode_luma_residual(h, sl, gb, scan, scan8x8, pixel_shift, mb_type, cbp, 0, 1)
++                         : decode_luma_residual(h, sl, gb, scan, scan8x8, pixel_shift, mb_type, cbp, 0, 0)) < 0 ) {
+             return -1;
+         }
+         h->cbp_table[mb_xy] |= ret << 12;
+         if (CHROMA444(h)) {
+-            if (decode_luma_residual(h, sl, gb, scan, scan8x8, pixel_shift, mb_type, cbp, 1) < 0 ) {
++            if (decode_luma_residual(h, sl, gb, scan, scan8x8, pixel_shift, mb_type, cbp, 1, 0) < 0 ) {
+                 return -1;
+             }
+-            if (decode_luma_residual(h, sl, gb, scan, scan8x8, pixel_shift, mb_type, cbp, 2) < 0 ) {
++            if (decode_luma_residual(h, sl, gb, scan, scan8x8, pixel_shift, mb_type, cbp, 2, 0) < 0 ) {
+                 return -1;
+             }
+         } else {
+@@ -1112,10 +1217,13 @@ decode_intra_mb:
+ 
+             if(cbp&0x30){
+                 for(chroma_idx=0; chroma_idx<2; chroma_idx++)
+-                    if (decode_residual(h, sl, gb, sl->mb + ((256 + 16*16*chroma_idx) << pixel_shift),
++                    if ((split && num_c8x8 == 1
++                             ? residual(h, sl, gb, sl->mb + ((256 + 16*16*chroma_idx) << pixel_shift),
++                                        CHROMA_DC_BLOCK_INDEX + chroma_idx, ff_h264_chroma_dc_scan, NULL, 4, 1, -1, &total)
++                             : decode_residual(h, sl, gb, sl->mb + ((256 + 16*16*chroma_idx) << pixel_shift),
+                                         CHROMA_DC_BLOCK_INDEX + chroma_idx,
+                                         CHROMA422(h) ? ff_h264_chroma422_dc_scan : ff_h264_chroma_dc_scan,
+-                                        NULL, 4 * num_c8x8) < 0) {
++                                        NULL, 4 * num_c8x8)) < 0) {
+                         return -1;
+                     }
+             }
+@@ -1127,7 +1235,9 @@ decode_intra_mb:
+                     for (i8x8 = 0; i8x8<num_c8x8; i8x8++) {
+                         for (i4x4 = 0; i4x4 < 4; i4x4++) {
+                             const int index = 16 + 16*chroma_idx + 8*i8x8 + i4x4;
+-                            if (decode_residual(h, sl, gb, mb, index, scan + 1, qmul, 15) < 0)
++                            if ((split ? residual(h, sl, gb, mb, index, scan + 1, qmul, 15, 1,
++                                                  i4x4 & 1 ? total : -1, &total)
++                                       : decode_residual(h, sl, gb, mb, index, scan + 1, qmul, 15)) < 0)
+                                 return -1;
+                             mb += 16 << pixel_shift;
+                         }
 diff --git a/libavcodec/h264_mb.c b/libavcodec/h264_mb.c
-index 2db0670..45d18b5 100644
+index 2db0670..2ba376c 100644
 --- a/libavcodec/h264_mb.c
 +++ b/libavcodec/h264_mb.c
 @@ -217,6 +217,8 @@ static av_always_inline void mc_dir_part(const H264Context *h, H264SliceContext
@@ -11,11 +270,151 @@ index 2db0670..45d18b5 100644
      ptrdiff_t offset  = (mx >> 2) * (1 << pixel_shift) + (my >> 2) * sl->mb_linesize;
      uint8_t *src_y    = pic->data[0] + offset;
      uint8_t *src_cb, *src_cr;
-@@ -787,6 +789,12 @@ static av_always_inline void hl_decode_mb_idct_luma(const H264Context *h, H264Sl
+@@ -247,9 +249,14 @@ static av_always_inline void mc_dir_part(const H264Context *h, H264SliceContext
+         emu   = 1;
+     }
  
++    const int prof = ff_xenon_prof;
++    uint64_t *const prof_row = ff_xenon_prof_slice[prof ? sl - h->slice_ctx : 0];
++    uint64_t prof_t = prof ? ff_xenon_ticks() : 0;
+     qpix_op[luma_xy](dest_y, src_y, sl->mb_linesize); // FIXME try variable height perhaps?
+     if (!square)
+         qpix_op[luma_xy](dest_y + delta, src_y + delta, sl->mb_linesize);
++    if (prof)
++        prof_row[XPROF_MC_LUMA] += ff_xenon_ticks() - prof_t;
+ 
+     if (CONFIG_GRAY && h->flags & AV_CODEC_FLAG_GRAY)
+         return;
+@@ -304,9 +311,13 @@ static av_always_inline void mc_dir_part(const H264Context *h, H264SliceContext
+                                  pic_width >> 1, pic_height >> (chroma_idc == 1 /* yuv420 */));
+         src_cb = sl->edge_emu_buffer;
+     }
++    if (prof)
++        prof_t = ff_xenon_ticks();
+     chroma_op(dest_cb, src_cb, sl->mb_uvlinesize,
+               height >> (chroma_idc == 1 /* yuv420 */),
+               mx & 7, ((unsigned)my << (chroma_idc == 2 /* yuv422 */)) & 7);
++    if (prof)
++        prof_row[XPROF_MC_CHROMA] += ff_xenon_ticks() - prof_t;
+ 
+     if (emu) {
+         h->vdsp.emulated_edge_mc(sl->edge_emu_buffer, src_cr,
+@@ -315,8 +326,12 @@ static av_always_inline void mc_dir_part(const H264Context *h, H264SliceContext
+                                  pic_width >> 1, pic_height >> (chroma_idc == 1 /* yuv420 */));
+         src_cr = sl->edge_emu_buffer;
+     }
++    if (prof)
++        prof_t = ff_xenon_ticks();
+     chroma_op(dest_cr, src_cr, sl->mb_uvlinesize, height >> (chroma_idc == 1 /* yuv420 */),
+               mx & 7, ((unsigned)my << (chroma_idc == 2 /* yuv422 */)) & 7);
++    if (prof)
++        prof_row[XPROF_MC_CHROMA] += ff_xenon_ticks() - prof_t;
+ }
+ 
+ static av_always_inline void mc_part_std(const H264Context *h, H264SliceContext *sl,
+@@ -488,22 +503,25 @@ static av_always_inline void prefetch_motion(const H264Context *h, H264SliceCont
+     /* fetch pixels for estimated mv 4 macroblocks ahead
+      * optimized for 64byte cache lines */
+     const int refn = sl->ref_cache[list][scan8[0]];
+-    if (refn >= 0) {
++    const uint64_t prof_t = ff_xenon_prof ? ff_xenon_ticks() : 0;
++    if (refn >= 0 && !(ff_xenon_tune & 128)) {
+         const int mx  = (sl->mv_cache[list][scan8[0]][0] >> 2) + 16 * sl->mb_x + 8;
+         const int my  = (sl->mv_cache[list][scan8[0]][1] >> 2) + 16 * sl->mb_y;
+         uint8_t **src = sl->ref_list[list][refn].data;
+         int off       =  mx * (1<< pixel_shift) +
+                         (my + (sl->mb_x & 3) * 4) * sl->mb_linesize +
+-                        (64 << pixel_shift);
++                        ((ff_xenon_tune & 2 ? 128 : 64) << pixel_shift);
+         h->vdsp.prefetch(src[0] + off, sl->linesize, 4);
+         if (chroma_idc == 3 /* yuv444 */) {
+             h->vdsp.prefetch(src[1] + off, sl->linesize, 4);
+             h->vdsp.prefetch(src[2] + off, sl->linesize, 4);
+         } else {
+-            off= ((mx>>1)+64) * (1<<pixel_shift) + ((my>>1) + (sl->mb_x&7))*sl->uvlinesize;
++            off= ((mx>>1)+(ff_xenon_tune & 2 ? 128 : 64)) * (1<<pixel_shift) + ((my>>1) + (sl->mb_x&7))*sl->uvlinesize;
+             h->vdsp.prefetch(src[1] + off, src[2] - src[1], 2);
+         }
+     }
++    if (ff_xenon_prof)
++        ff_xenon_prof_slice[sl - h->slice_ctx][XPROF_MC_PREFETCH] += ff_xenon_ticks() - prof_t;
+ }
+ 
+ static av_always_inline void xchg_mb_border(const H264Context *h, H264SliceContext *sl,
+@@ -785,8 +803,81 @@ static av_always_inline void hl_decode_mb_idct_luma(const H264Context *h, H264Sl
+     }
+ }
+ 
++#if ARCH_PPC && HAVE_ALTIVEC
++#include "ppc/h264_xenon_vmx.h"
++
++/* moonlight-xbox360 (ff_xenon_tune & 8): a macroblock predicted as one 16x16 block from a whole-pixel position
++ * inside the reference picture, with no weighting, which is nearly every inter macroblock of a "lean" stream. Its
++ * 384 bytes are copied here, without the general path's bookkeeping. This CPU fetches nothing ahead by itself, so
++ * each time a row of pixels enters a new 128-byte cache line, the line after it is asked for in both pictures.
++ * Returns 0, having done nothing, for any other macroblock. */
++static av_always_inline int xenon_whole_pixel_mb(const H264Context *h, H264SliceContext *sl, int mb_type,
++                                                 uint8_t *dest_y, uint8_t *dest_cb, uint8_t *dest_cr)
++{
++    const int mx = sl->mv_cache[0][scan8[0]][0], my = sl->mv_cache[0][scan8[0]][1];
++    const int x = (mx >> 2) + 16 * sl->mb_x, y = (my >> 2) + 16 * sl->mb_y;
++    const int refn = sl->ref_cache[0][scan8[0]];
++    const ptrdiff_t stride = sl->linesize, cstride = sl->uvlinesize;
++    const int prefetch = !(ff_xenon_tune & (16 | 128));
++    int i;
++    if (!IS_16X16(mb_type) || USES_LIST(mb_type, 1) || refn < 0 || sl->pwt.use_weight || ((mx | my) & 3) ||
++        x < 0 || y < 0 || x + 16 > 16 * h->mb_width || y + 16 > 16 * h->mb_height)
++        return 0;
++    const H264Ref *const ref = &sl->ref_list[0][refn];
++    const uint8_t *src = ref->data[0] + x + y * stride;
++    const xv_u8 shift = vec_lvsl(0, src);
++    if (prefetch) {
++        if (((uintptr_t)src & 127) < 16)
++            for (i = 0; i < 16; i++)
++                __asm__ volatile ("dcbt 0,%0" : : "r" (src + 128 + i * stride));
++        if (((uintptr_t)dest_y & 127) < 16)
++            for (i = 0; i < 16; i++)
++                __asm__ volatile ("dcbtst 0,%0" : : "r" (dest_y + 128 + i * stride));
++    }
++    for (i = 0; i < 16; i++, src += stride, dest_y += stride)
++        vec_st(vec_perm(vec_ld(0, src), vec_ld(15, src), shift), 0, dest_y);
++
++    const int cx = (mx >> 3) + 8 * sl->mb_x, cy = (my >> 3) + 8 * sl->mb_y;
++    const uint8_t *src_cb = ref->data[1] + cx + cy * cstride, *src_cr = ref->data[2] + cx + cy * cstride;
++    if (prefetch) {
++        if (((uintptr_t)src_cb & 127) < 8)
++            for (i = 0; i < 8; i++) {
++                __asm__ volatile ("dcbt 0,%0" : : "r" (src_cb + 128 + i * cstride));
++                __asm__ volatile ("dcbt 0,%0" : : "r" (src_cr + 128 + i * cstride));
++            }
++        if (((uintptr_t)dest_cb & 127) < 8)
++            for (i = 0; i < 8; i++) {
++                __asm__ volatile ("dcbtst 0,%0" : : "r" (dest_cb + 128 + i * cstride));
++                __asm__ volatile ("dcbtst 0,%0" : : "r" (dest_cr + 128 + i * cstride));
++            }
++    }
++    if ((mx | my) & 7) {
++        /* An odd whole pixel of luma is half a pixel of chroma. */
++        h->h264chroma.put_h264_chroma_pixels_tab[0](dest_cb, src_cb, cstride, 8, mx & 7, my & 7);
++        h->h264chroma.put_h264_chroma_pixels_tab[0](dest_cr, src_cr, cstride, 8, mx & 7, my & 7);
++    } else {
++        xv_h264_chroma_mc8(dest_cb, src_cb, cstride, 8, 0, 0, 0);
++        xv_h264_chroma_mc8(dest_cr, src_cr, cstride, 8, 0, 0, 0);
++    }
++    if (ff_xenon_prof)
++        ff_xenon_prof_slice[sl - h->slice_ctx][XPROF_FAST_MBS]++;
++    return 1;
++}
++#define XENON_WHOLE_PIXEL_MB 1
++#else
++#define XENON_WHOLE_PIXEL_MB 0
++#endif
++
++
  #define BITS   8
  #define SIMPLE 1
 +int ff_h264_stream_deblocks, ff_h264_stream_subpel;   /* h264dec.h */
++int ff_h264_slice_qp_sum, ff_h264_slice_qp_count;     /* h264dec.h */
 +/* Set: inter macroblocks get no motion compensation (decbench times decoding without it, to size that part). */
 +int ff_h264_skip_mc;
 +/* Set before a decoder opens: chroma stays in C, not ppc/h264_xenon_vmx.h (decbench times one against the other). */
@@ -24,7 +423,7 @@ index 2db0670..45d18b5 100644
  #include "h264_mb_template.c"
  
  #undef  BITS
-@@ -797,7 +805,19 @@ static av_always_inline void hl_decode_mb_idct_luma(const H264Context *h, H264Sl
+@@ -797,7 +888,97 @@ static av_always_inline void hl_decode_mb_idct_luma(const H264Context *h, H264Sl
  #define SIMPLE 0
  #include "h264_mb_template.c"
  
@@ -32,12 +431,90 @@ index 2db0670..45d18b5 100644
 + * times parsing alone with a hook that does nothing). */
 +void (*ff_h264_mb_hook)(const void *h, void *sl);
 +
++/* moonlight-xbox360 (ff_xenon_tune & 128). This CPU fetches nothing ahead by itself, and a macroblock needs about
++ * six new 128-byte cache lines: two of each picture's luma (a line holds 8 macroblocks' worth of a row, and there
++ * are 16 rows) and one of each picture's chroma. Asked for sixteen or more at once, as the whole-pixel path did at
++ * each line's start, most requests seem to be dropped. So each macroblock asks for its share of the lines after the
++ * ones it is in: two luma rows, by its place among the eight macroblocks of a line, and one chroma row, of Cb or Cr
++ * by turns. dcbt and dcbtst never fault, so addresses past the picture do no harm. */
++static av_always_inline void xenon_touch(const uint8_t *y, const uint8_t *cb, const uint8_t *cr, ptrdiff_t stride,
++                                         ptrdiff_t cstride, int write)
++{
++#if ARCH_PPC
++    const uint8_t *const line = (const uint8_t *)(((uintptr_t)y & ~(uintptr_t)127) + 128);
++    const int place = ((uintptr_t)y >> 4) & 7, cplace = ((uintptr_t)cb >> 3) & 15;
++    const uint8_t *const c = cplace & 1 ? cr : cb;
++    const uint8_t *const cline = (const uint8_t *)(((uintptr_t)c & ~(uintptr_t)127) + 128) + (cplace >> 1) * cstride;
++    if (write) {
++        __asm__ volatile ("dcbtst 0,%0" : : "r" (line + 2 * place * stride));
++        __asm__ volatile ("dcbtst 0,%0" : : "r" (line + (2 * place + 1) * stride));
++        __asm__ volatile ("dcbtst 0,%0" : : "r" (cline));
++    } else {
++        __asm__ volatile ("dcbt 0,%0" : : "r" (line + 2 * place * stride));
++        __asm__ volatile ("dcbt 0,%0" : : "r" (line + (2 * place + 1) * stride));
++        __asm__ volatile ("dcbt 0,%0" : : "r" (cline));
++    }
++#endif
++}
++
++/* The picture being written, at the slice's current macroblock. */
++void ff_xenon_touch_written(const H264Context *h, const H264SliceContext *sl)
++{
++    const AVFrame *const f = h->cur_pic.f;
++    const ptrdiff_t at = 16 * (sl->mb_x + sl->mb_y * (ptrdiff_t)sl->linesize);
++    const ptrdiff_t cat = 8 * (sl->mb_x + sl->mb_y * (ptrdiff_t)sl->uvlinesize);
++    xenon_touch(f->data[0] + at, f->data[1] + cat, f->data[2] + cat, sl->linesize, sl->uvlinesize, 1);
++}
++
++/* The picture a P slice predicts from, where this macroblock's motion vector points (the same place, for an intra
++ * macroblock): the next macroblocks' vectors are mostly near it. */
++void ff_xenon_touch_read(const H264Context *h, const H264SliceContext *sl)
++{
++    if (sl->slice_type_nos != AV_PICTURE_TYPE_P || !sl->ref_count[0])
++        return;
++    const int refn = sl->ref_cache[0][scan8[0]];
++    const H264Ref *const ref = &sl->ref_list[0][refn > 0 && refn < (int)sl->ref_count[0] ? refn : 0];
++    const int mx = refn >= 0 ? sl->mv_cache[0][scan8[0]][0] : 0, my = refn >= 0 ? sl->mv_cache[0][scan8[0]][1] : 0;
++    const ptrdiff_t at = 16 * sl->mb_x + (mx >> 2) + (16 * sl->mb_y + (my >> 2)) * (ptrdiff_t)sl->linesize;
++    const ptrdiff_t cat = 8 * sl->mb_x + (mx >> 3) + (8 * sl->mb_y + (my >> 3)) * (ptrdiff_t)sl->uvlinesize;
++    if (!ref->data[0])
++        return;
++    xenon_touch(ref->data[0] + at, ref->data[1] + cat, ref->data[2] + cat, sl->linesize, sl->uvlinesize, 0);
++}
++
++int ff_xenon_prof;                  /* h264dec.h */
++/* On unless a benchmark says otherwise: the whole-pixel path (8), the residual by rows of blocks (32) and a block's
++ * first code read in place (64, about 1% more, measured after the figures here), and the picture read from asked
++ * for three lines a macroblock (128 | 768, 1 to 3% more; asking for the written picture's lines too cost time).
++ * All of it, with the app's picture layout (video.c), 2026-11-25 04:12, ms a frame before and now: lean 12.4 and
++ * 9.7, 16.5 and 13.3; x264 superfast without deblocking 14.2 and 11.9, 18.7 and 15.8; with deblocking 23.1 and
++ * 20.6. The first two alone had measured
++ * on the console, 2026-11-25 (decbench tune, 1080p, 24 slices, ms a frame without and with): lean stream 12.4 and
++ * 10.7 at 11.5 Mbit/s, 17.0 and 14.6 at 22.6; x264 superfast without deblocking 14.3 and 12.7, 19.1 and 16.7; a
++ * stream with deblocking 23.1 and 21.9. */
++int ff_xenon_tune = 8 | 32 | 64 | 128 | 768;
++uint64_t ff_xenon_prof_slice[64][XPROF_SLICE_N] __attribute__((aligned(128)));
++uint64_t ff_xenon_prof_main[XPROF_MAIN_N];
++uint64_t ff_xenon_prof_execute_start;
++
  void ff_h264_hl_decode_mb(const H264Context *h, H264SliceContext *sl)
 +{
-+    if (ff_h264_mb_hook)
++    if (ff_h264_mb_hook) {
 +        ff_h264_mb_hook(h, sl);
-+    else
++    } else if (!ff_xenon_prof) {
 +        ff_h264_hl_decode_mb_cpu(h, sl);
++    } else {
++        /* Prediction (the template notes the time when it is done), then the residual added. */
++        uint64_t *const p = ff_xenon_prof_slice[sl - h->slice_ctx];
++        const int intra = IS_INTRA(h->cur_pic.mb_type[sl->mb_xy]);
++        p[XPROF_MID] = 0;
++        const uint64_t t0 = ff_xenon_ticks();
++        ff_h264_hl_decode_mb_cpu(h, sl);
++        const uint64_t t1 = ff_xenon_ticks(), mid = p[XPROF_MID] ? p[XPROF_MID] : t1;
++        p[intra ? XPROF_INTRA : XPROF_MC] += mid - t0;
++        p[XPROF_IDCT] += t1 - mid;
++        p[XPROF_INTRA_MBS] += intra;
++    }
 +}
 +
 +void ff_h264_hl_decode_mb_cpu(const H264Context *h, H264SliceContext *sl)
@@ -45,33 +522,150 @@ index 2db0670..45d18b5 100644
      const int mb_xy   = sl->mb_xy;
      const int mb_type = h->cur_pic.mb_type[mb_xy];
 diff --git a/libavcodec/h264_mb_template.c b/libavcodec/h264_mb_template.c
-index d5ea26a..63372b1 100644
+index d5ea26a..b67854f 100644
 --- a/libavcodec/h264_mb_template.c
 +++ b/libavcodec/h264_mb_template.c
-@@ -176,7 +176,7 @@ static av_noinline void FUNC(hl_decode_mb)(const H264Context *h, H264SliceContex
+@@ -57,8 +57,27 @@ static av_noinline void FUNC(hl_decode_mb)(const H264Context *h, H264SliceContex
+     dest_cb = h->cur_pic.f->data[1] +  (mb_x << PIXEL_SHIFT) * 8 + mb_y * sl->uvlinesize * block_h;
+     dest_cr = h->cur_pic.f->data[2] +  (mb_x << PIXEL_SHIFT) * 8 + mb_y * sl->uvlinesize * block_h;
+ 
+-    h->vdsp.prefetch(dest_y  + (sl->mb_x & 3) * 4 * sl->linesize   + (64 << PIXEL_SHIFT), sl->linesize,       4);
+-    h->vdsp.prefetch(dest_cb + (sl->mb_x & 7)     * sl->uvlinesize + (64 << PIXEL_SHIFT), dest_cr - dest_cb, 2);
++    if (ff_xenon_tune & 128) {
++        if ((ff_xenon_tune & 0x300) == 0 || (ff_xenon_tune & 0x300) == 0x200)
++            ff_xenon_touch_written(h, sl);
++        if ((ff_xenon_tune & 0x300) != 0x200)
++            ff_xenon_touch_read(h, sl);
++    } else
++#if ARCH_PPC
++    if (ff_xenon_tune & 4) {
++        /* For writing: the line is claimed without waiting for another thread's copy of it to be read back. */
++        const uint8_t *py = dest_y + (sl->mb_x & 3) * 4 * sl->linesize + ((ff_xenon_tune & 2 ? 128 : 64) << PIXEL_SHIFT);
++        const uint8_t *pc = dest_cb + (sl->mb_x & 7) * sl->uvlinesize + ((ff_xenon_tune & 2 ? 128 : 64) << PIXEL_SHIFT);
++        for (i = 0; i < 4; i++)
++            __asm__ volatile ("dcbtst 0,%0" : : "r" (py + i * sl->linesize));
++        __asm__ volatile ("dcbtst 0,%0" : : "r" (pc));
++        __asm__ volatile ("dcbtst 0,%0" : : "r" (pc + (dest_cr - dest_cb)));
++    } else
++#endif
++    {
++    h->vdsp.prefetch(dest_y  + (sl->mb_x & 3) * 4 * sl->linesize   + ((ff_xenon_tune & 2 ? 128 : 64) << PIXEL_SHIFT), sl->linesize,       4);
++    h->vdsp.prefetch(dest_cb + (sl->mb_x & 7)     * sl->uvlinesize + ((ff_xenon_tune & 2 ? 128 : 64) << PIXEL_SHIFT), dest_cr - dest_cb, 2);
++    }
+ 
+     h->list_counts[mb_xy] = sl->list_count;
+ 
+@@ -176,7 +195,11 @@ static av_noinline void FUNC(hl_decode_mb)(const H264Context *h, H264SliceContex
                                h->h264chroma.avg_h264_chroma_pixels_tab,
                                h->h264dsp.weight_h264_pixels_tab,
                                h->h264dsp.biweight_h264_pixels_tab);
 -            } else {
++#if XENON_WHOLE_PIXEL_MB && SIMPLE && BITS == 8
++            } else if ((ff_xenon_tune & 8) && !ff_h264_skip_mc &&
++                       xenon_whole_pixel_mb(h, sl, mb_type, dest_y, dest_cb, dest_cr)) {
++#endif
 +            } else if (!ff_h264_skip_mc) {
                  FUNC(hl_motion_420)(h, sl, dest_y, dest_cb, dest_cr,
                                h->h264qpel.put_h264_qpel_pixels_tab,
                                h->h264chroma.put_h264_chroma_pixels_tab,
+@@ -187,8 +210,14 @@ static av_noinline void FUNC(hl_decode_mb)(const H264Context *h, H264SliceContex
+             }
+         }
+ 
++        if (ff_xenon_prof)
++            ff_xenon_prof_slice[sl - h->slice_ctx][XPROF_MID] = ff_xenon_ticks();
+         hl_decode_mb_idct_luma(h, sl, mb_type, SIMPLE, transform_bypass,
+                                PIXEL_SHIFT, block_offset, linesize, dest_y, 0);
++        if (ff_xenon_prof) {
++            uint64_t *const prof_row = ff_xenon_prof_slice[sl - h->slice_ctx];
++            prof_row[XPROF_IDCT_LUMA] += ff_xenon_ticks() - prof_row[XPROF_MID];
++        }
+ 
+         if ((SIMPLE || !CONFIG_GRAY || !(h->flags & AV_CODEC_FLAG_GRAY)) &&
+             (sl->cbp & 0x30)) {
 diff --git a/libavcodec/h264_slice.c b/libavcodec/h264_slice.c
-index 32c8f33..c8503ff 100644
+index 32c8f33..9c7a63f 100644
 --- a/libavcodec/h264_slice.c
 +++ b/libavcodec/h264_slice.c
-@@ -1910,6 +1910,8 @@ static int h264_slice_header_parse(const H264Context *h, H264SliceContext *sl,
+@@ -1910,6 +1910,10 @@ static int h264_slice_header_parse(const H264Context *h, H264SliceContext *sl,
              sl->slice_beta_offset     = slice_beta_offset_div2 * 2;
          }
      }
 +    if (sl->deblocking_filter)   /* moonlight-xbox360: h264dec.h */
 +        ff_h264_stream_deblocks = 1;
++    ff_h264_slice_qp_sum += sl->qscale;
++    ff_h264_slice_qp_count++;
  
      return 0;
  }
+@@ -2439,7 +2443,7 @@ static int fill_filter_caches(const H264Context *h, H264SliceContext *sl, int mb
+     return 0;
+ }
+ 
+-static void loop_filter(const H264Context *h, H264SliceContext *sl, int start_x, int end_x)
++static void loop_filter_untimed(const H264Context *h, H264SliceContext *sl, int start_x, int end_x)
+ {
+     uint8_t *dest_y, *dest_cb, *dest_cr;
+     int linesize, uvlinesize, mb_x, mb_y;
+@@ -2565,7 +2569,36 @@ static void er_add_slice(H264SliceContext *sl,
+     }
+ }
+ 
++static void loop_filter(const H264Context *h, H264SliceContext *sl, int start_x, int end_x)
++{
++    if (!ff_xenon_prof) {
++        loop_filter_untimed(h, sl, start_x, end_x);
++    } else {
++        const uint64_t t0 = ff_xenon_ticks();
++        loop_filter_untimed(h, sl, start_x, end_x);
++        ff_xenon_prof_slice[sl - h->slice_ctx][XPROF_FILTER] += ff_xenon_ticks() - t0;
++    }
++}
++
++static int decode_slice_untimed(struct AVCodecContext *avctx, void *arg);
++
+ static int decode_slice(struct AVCodecContext *avctx, void *arg)
++{
++    H264SliceContext *sl = arg;
++    if (!ff_xenon_prof)
++        return decode_slice_untimed(avctx, arg);
++    uint64_t *const p = ff_xenon_prof_slice[sl - sl->h264->slice_ctx];
++    const uint64_t t0 = ff_xenon_ticks();
++    const int ret = decode_slice_untimed(avctx, arg);
++    const uint64_t t1 = ff_xenon_ticks();
++    p[XPROF_TOTAL] += t1 - t0;
++    p[XPROF_START] += t0 - ff_xenon_prof_execute_start;
++    p[XPROF_END] += t1 - ff_xenon_prof_execute_start;
++    p[XPROF_SLICES]++;
++    return ret;
++}
++
++static int decode_slice_untimed(struct AVCodecContext *avctx, void *arg)
+ {
+     H264SliceContext *sl = arg;
+     const H264Context *h = sl->h264;
+@@ -2777,7 +2810,19 @@ finish:
+  *
+  * @param h h264 master context
+  */
++static int execute_decode_slices(H264Context *h);
++
+ int ff_h264_execute_decode_slices(H264Context *h)
++{
++    if (!ff_xenon_prof)
++        return execute_decode_slices(h);
++    ff_xenon_prof_execute_start = ff_xenon_ticks();
++    const int ret = execute_decode_slices(h);
++    ff_xenon_prof_main[XPROF_MAIN_EXECUTE] += ff_xenon_ticks() - ff_xenon_prof_execute_start;
++    return ret;
++}
++
++static int execute_decode_slices(H264Context *h)
+ {
+     AVCodecContext *const avctx = h->avctx;
+     H264SliceContext *sl;
 diff --git a/libavcodec/h264dec.c b/libavcodec/h264dec.c
-index 0154fe1..000d820 100644
+index 0154fe1..bd7f5cc 100644
 --- a/libavcodec/h264dec.c
 +++ b/libavcodec/h264dec.c
 @@ -319,6 +319,12 @@ static int h264_init_context(AVCodecContext *avctx, H264Context *h)
@@ -87,8 +681,64 @@ index 0154fe1..000d820 100644
      h->slice_ctx = av_calloc(h->nb_slice_ctx, sizeof(*h->slice_ctx));
      if (!h->slice_ctx) {
          h->nb_slice_ctx = 0;
+@@ -587,7 +593,19 @@ static void debug_green_metadata(const H264SEIGreenMetaData *gm, void *logctx)
+     }
+ }
+ 
++static int decode_nal_units_untimed(H264Context *h, const uint8_t *buf, int buf_size);
++
+ static int decode_nal_units(H264Context *h, const uint8_t *buf, int buf_size)
++{
++    if (!ff_xenon_prof)
++        return decode_nal_units_untimed(h, buf, buf_size);
++    const uint64_t t0 = ff_xenon_ticks();
++    const int ret = decode_nal_units_untimed(h, buf, buf_size);
++    ff_xenon_prof_main[XPROF_MAIN_NALS] += ff_xenon_ticks() - t0;
++    return ret;
++}
++
++static int decode_nal_units_untimed(H264Context *h, const uint8_t *buf, int buf_size)
+ {
+     AVCodecContext *const avctx = h->avctx;
+     int nals_needed = 0; ///< number of NALs that need decoding before the next frame thread starts
+@@ -612,8 +630,11 @@ static int decode_nal_units(H264Context *h, const uint8_t *buf, int buf_size)
+             h->is_avc = 1;
+     }
+ 
++    const uint64_t split_t0 = ff_xenon_prof ? ff_xenon_ticks() : 0;
+     ret = ff_h2645_packet_split(&h->pkt, buf, buf_size, avctx, h->nal_length_size,
+                                 avctx->codec_id, !!h->is_avc * H2645_FLAG_IS_NALFF);
++    if (ff_xenon_prof)
++        ff_xenon_prof_main[XPROF_MAIN_SPLIT] += ff_xenon_ticks() - split_t0;
+     if (ret < 0) {
+         av_log(avctx, AV_LOG_ERROR,
+                "Error splitting the input into NAL units.\n");
+@@ -1031,8 +1052,23 @@ static int send_next_delayed_frame(H264Context *h, AVFrame *dst_frame,
+     return buf_index;
+ }
+ 
++static int h264_decode_frame_untimed(AVCodecContext *avctx, AVFrame *pict,
++                                     int *got_frame, AVPacket *avpkt);
++
+ static int h264_decode_frame(AVCodecContext *avctx, AVFrame *pict,
+                              int *got_frame, AVPacket *avpkt)
++{
++    if (!ff_xenon_prof)
++        return h264_decode_frame_untimed(avctx, pict, got_frame, avpkt);
++    const uint64_t t0 = ff_xenon_ticks();
++    const int ret = h264_decode_frame_untimed(avctx, pict, got_frame, avpkt);
++    ff_xenon_prof_main[XPROF_MAIN_FRAME] += ff_xenon_ticks() - t0;
++    ff_xenon_prof_main[XPROF_MAIN_FRAMES]++;
++    return ret;
++}
++
++static int h264_decode_frame_untimed(AVCodecContext *avctx, AVFrame *pict,
++                                     int *got_frame, AVPacket *avpkt)
+ {
+     const uint8_t *buf = avpkt->data;
+     int buf_size       = avpkt->size;
 diff --git a/libavcodec/h264dec.h b/libavcodec/h264dec.h
-index ccd7583..7e7cb10 100644
+index ccd7583..a0f3b9b 100644
 --- a/libavcodec/h264dec.h
 +++ b/libavcodec/h264dec.h
 @@ -58,7 +58,8 @@
@@ -101,7 +751,7 @@ index ccd7583..7e7cb10 100644
  
  #ifdef ALLOW_INTERLACE
  #define MB_MBAFF(h)    (h)->mb_mbaff
-@@ -608,6 +609,14 @@ int ff_h264_decode_ref_pic_marking(H264SliceContext *sl, GetBitContext *gb,
+@@ -608,6 +609,51 @@ int ff_h264_decode_ref_pic_marking(H264SliceContext *sl, GetBitContext *gb,
                                     const H2645NAL *nal, void *logctx);
  
  void ff_h264_hl_decode_mb(const H264Context *h, H264SliceContext *sl);
@@ -113,6 +763,43 @@ index ccd7583..7e7cb10 100644
 + * Set (never cleared here) by a slice header that leaves the deblocking filter on, and by a block predicted from a
 + * sub-pixel position; the app clears both when a stream starts. */
 +extern int ff_h264_stream_deblocks, ff_h264_stream_subpel;
++/* moonlight-xbox360: every slice header adds its quantiser here and counts itself (one thread parses them all), so
++ * the app can tell how coarsely a frame was coded: it zeroes both before a frame and reads them after. */
++extern int ff_h264_slice_qp_sum, ff_h264_slice_qp_count;
++/* moonlight-xbox360, for decbench: where a frame's decoding time goes. With ff_xenon_prof set, each slice context
++ * adds the timebase ticks it spends in each part of its work to its row of ff_xenon_prof_slice (a row is one cache
++ * pair of cache lines, 256 bytes), and the thread feeding the decoder adds its own parts to ff_xenon_prof_main. START and END are a
++ * slice's start and end, counted from the moment the frame's slices were handed to the threads. */
++enum { XPROF_SKIP, XPROF_HEAD, XPROF_RESIDUAL, XPROF_MC, XPROF_INTRA, XPROF_IDCT, XPROF_FILTER, XPROF_TOTAL,
++       XPROF_START, XPROF_END, XPROF_MBS, XPROF_SKIPPED, XPROF_INTRA_MBS, XPROF_SLICES, XPROF_MID,
++       XPROF_MC_LUMA, XPROF_MC_CHROMA, XPROF_MC_PREFETCH, XPROF_IDCT_LUMA, XPROF_FAST_MBS, XPROF_SLICE_N = 32 };
++enum { XPROF_MAIN_FRAME, XPROF_MAIN_SPLIT, XPROF_MAIN_NALS, XPROF_MAIN_EXECUTE, XPROF_MAIN_FRAMES, XPROF_MAIN_N = 8 };
++extern int ff_xenon_prof;
++extern uint64_t ff_xenon_prof_slice[64][XPROF_SLICE_N];
++extern uint64_t ff_xenon_prof_main[XPROF_MAIN_N];
++extern uint64_t ff_xenon_prof_execute_start;
++/* moonlight-xbox360, for decbench: experiments switched on by bits. 1: no prefetching at all; 2: prefetch 128 bytes
++ * ahead (this CPU's cache line) instead of 64; 4: the picture being written is prefetched for writing (dcbtst);
++ * 8: a 16x16 block predicted from a whole-pixel position inside the picture is copied by code of its own
++ * (xenon_whole_pixel_mb, h264_mb.c), which prefetches a cache line of both pictures ahead; 16: that, unprefetched;
++ * 32 (read when a decoder opens): the residual of 4x4 blocks is added a row of blocks at a time (ppc/h264dsp.c);
++ * 64: a block's first code is read where the block is asked for (residual, h264_cavlc.c);
++ * 128: both pictures are prefetched a few lines a macroblock (ff_xenon_touch_*, h264_mb.c) in place of FFmpeg's
++ * prefetching and the whole-pixel path's; with it, 256: the written picture's lines are asked for before the
++ * macroblock is parsed, the read picture's after; 512: the written picture's only; 768: the read picture's only.
++ * Tried and taken out again (2026-11-25): claiming the written picture's cache lines zeroed (dcbz128) before a slice
++ * fills them, so they aren't read from memory first. Exact, and no faster. */
++void ff_xenon_touch_written(const H264Context *h, const H264SliceContext *sl);
++void ff_xenon_touch_read(const H264Context *h, const H264SliceContext *sl);
++extern int ff_xenon_tune;
++static av_always_inline uint64_t ff_xenon_ticks(void)
++{
++#if ARCH_PPC
++    return __builtin_ppc_get_timebase();
++#else
++    return 0;
++#endif
++}
  void ff_h264_decode_init_vlc(void);
  
  /**
@@ -148,10 +835,10 @@ index ae3c1b1..904515c 100644
          return;
 diff --git a/libavcodec/ppc/h264_xenon_vmx.h b/libavcodec/ppc/h264_xenon_vmx.h
 new file mode 100644
-index 0000000..9aac591
+index 0000000..ebd779d
 --- /dev/null
 +++ b/libavcodec/ppc/h264_xenon_vmx.h
-@@ -0,0 +1,249 @@
+@@ -0,0 +1,335 @@
 +/* H.264 chroma prediction and chroma deblocking for Xenon's VMX128 (Xbox 360), without vector integer multiplies.
 + * Part of FFmpeg, under its license (LGPL 2.1 or later, COPYING.LGPLv2.1); patches/ffmpeg-xenon-vmx128.patch.
 + * Self-contained (altivec.h only): dev/vmx_test checks each function against FFmpeg's C code under QEMU. */
@@ -222,6 +909,92 @@ index 0000000..9aac591
 +        r = vec_avg(r, vec_ld(0, dst));
 +    vec_ste((xv_u32)r, 0, (unsigned int *)dst);
 +    vec_ste((xv_u32)r, 4, (unsigned int *)dst);
++}
++
++/* The residual of 4x4 blocks, two side by side at a time: FFmpeg calls a function for each block, and each call
++ * reads the pixels the last one has just stored, which this CPU waits out (a load behind a store to the same
++ * place costs about 40 cycles); a block with only a DC coefficient also goes from an integer register to a vector
++ * one through memory, the same wait again. Here a row of blocks is transformed with no scalar in between, and each
++ * row of pixels is read and written once.
++ *
++ * xv_idct4_pair: the inverse transforms of blocks a and b (16 coefficients each, laid out as FFmpeg's
++ * h264_idct_add takes them), as four rows of eight 16-bit values to add to the pixels: a's four, then b's. The same
++ * arithmetic as h264_idct_add_altivec, so a block of zeros gives zeros and a block with only a DC coefficient what
++ * h264_idct_dc_add gives. Zeroes both blocks, which are 16-aligned. */
++XV_INLINE void xv_idct4_pair(int16_t *a, int16_t *b, xv_s16 *y0, xv_s16 *y1, xv_s16 *y2, xv_s16 *y3)
++{
++    static const xv_u8 first_halves = { 0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23 };
++    static const xv_u8 second_halves = { 8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31 };
++    static const xv_s16 rounding = { 32, 0, 0, 0, 32, 0, 0, 0 };
++    const xv_u16 one = vec_splat_u16(1), six = vec_splat_u16(6);
++    const xv_s16 zero = vec_splat_s16(0);
++    const xv_s16 a01 = vec_ld(0, a), a23 = vec_ld(16, a), b01 = vec_ld(0, b), b23 = vec_ld(16, b);
++    xv_s16 r0, r1, r2, r3, z0, z1, z2, z3, o0, o1, o2, o3, m0, m1, ta01, ta23, tb01, tb23;
++    vec_st(zero, 0, a);
++    vec_st(zero, 16, a);
++    vec_st(zero, 0, b);
++    vec_st(zero, 16, b);
++    /* Each block's four rows of coefficients, a's beside b's. */
++    r0 = vec_add(vec_perm(a01, b01, first_halves), rounding);
++    r1 = vec_perm(a01, b01, second_halves);
++    r2 = vec_perm(a23, b23, first_halves);
++    r3 = vec_perm(a23, b23, second_halves);
++#define XV_IDCT4_1D(i0, i1, i2, i3) \
++    z0 = vec_add(i0, i2); \
++    z1 = vec_sub(i0, i2); \
++    z2 = vec_sub(vec_sra(i1, one), i3); \
++    z3 = vec_add(i1, vec_sra(i3, one)); \
++    o0 = vec_add(z0, z3); \
++    o1 = vec_add(z1, z2); \
++    o2 = vec_sub(z1, z2); \
++    o3 = vec_sub(z0, z3)
++    XV_IDCT4_1D(r0, r1, r2, r3);
++    /* Each block turned on its diagonal: a's from the first four values of each row, b's from the last four. */
++    m0 = vec_mergeh(o0, o2);
++    m1 = vec_mergeh(o1, o3);
++    ta01 = vec_mergeh(m0, m1);
++    ta23 = vec_mergel(m0, m1);
++    m0 = vec_mergel(o0, o2);
++    m1 = vec_mergel(o1, o3);
++    tb01 = vec_mergeh(m0, m1);
++    tb23 = vec_mergel(m0, m1);
++    r0 = vec_perm(ta01, tb01, first_halves);
++    r1 = vec_perm(ta01, tb01, second_halves);
++    r2 = vec_perm(ta23, tb23, first_halves);
++    r3 = vec_perm(ta23, tb23, second_halves);
++    XV_IDCT4_1D(r0, r1, r2, r3);
++#undef XV_IDCT4_1D
++    *y0 = vec_sra(o0, six);
++    *y1 = vec_sra(o1, six);
++    *y2 = vec_sra(o2, six);
++    *y3 = vec_sra(o3, six);
++}
++
++/* Four blocks side by side (a, b, c, d) added to the 16 pixels by 4 rows at dst, which is 16-aligned. */
++XV_INLINE void xv_idct4_add_row16(uint8_t *dst, ptrdiff_t stride, int16_t *a, int16_t *b, int16_t *c, int16_t *d)
++{
++    const xv_u8 zero = vec_splat_u8(0);
++    xv_s16 left[4], right[4];
++    int i;
++    xv_idct4_pair(a, b, &left[0], &left[1], &left[2], &left[3]);
++    xv_idct4_pair(c, d, &right[0], &right[1], &right[2], &right[3]);
++    for (i = 0; i < 4; i++, dst += stride) {
++        const xv_u8 v = vec_ld(0, dst);
++        vec_st(vec_packsu(vec_add((xv_s16)vec_mergeh(zero, v), left[i]), vec_add((xv_s16)vec_mergel(zero, v), right[i])),
++               0, dst);
++    }
++}
++
++/* Two blocks side by side added to the 8 pixels by 4 rows at dst, which is 8-aligned (a chroma block's row). */
++XV_INLINE void xv_idct4_add_row8(uint8_t *dst, ptrdiff_t stride, int16_t *a, int16_t *b)
++{
++    xv_s16 y[4];
++    int i;
++    xv_idct4_pair(a, b, &y[0], &y[1], &y[2], &y[3]);
++    for (i = 0; i < 4; i++, dst += stride) {
++        const xv_s16 sum = vec_add(xv_widen(xv_load(dst, 7)), y[i]);
++        xv_store8(dst, vec_packsu(sum, sum), 0);
++    }
 +}
 +
 +/* FFmpeg's put/avg_h264_chroma_mc8 (h264chroma_template.c), bit for bit: an 8-wide block, h rows, at the
@@ -451,10 +1224,10 @@ index bd0d213..974e772 100644
      const int high_bit_depth = bit_depth > 8;
  
 diff --git a/libavcodec/ppc/h264dsp.c b/libavcodec/ppc/h264dsp.c
-index 0650768..7ad8009 100644
+index 0650768..3fbecdb 100644
 --- a/libavcodec/ppc/h264dsp.c
 +++ b/libavcodec/ppc/h264dsp.c
-@@ -783,6 +783,47 @@ static void biweight_h264_pixels ## W ## _altivec(uint8_t *dst, uint8_t *src, pt
+@@ -783,6 +783,102 @@ static void biweight_h264_pixels ## W ## _altivec(uint8_t *dst, uint8_t *src, pt
  
  H264_WEIGHT(16)
  H264_WEIGHT( 8)
@@ -499,10 +1272,65 @@ index 0650768..7ad8009 100644
 +    else
 +        xv_h264_h_loop_filter_chroma(pix, stride, alpha, beta, NULL);
 +}
++
++/* A macroblock's sixteen 4x4 luma blocks, a row of four at a time (h264_xenon_vmx.h). The blocks of row r are
++ * numbered row_blocks[r], left to right, and their counts of coefficients are the four bytes at nnzc + 12 + 8 * r.
++ * dst is the macroblock's first pixel, 16-aligned as every macroblock is when the picture and its stride are. */
++static const uint8_t row_blocks[4][4] = { { 0, 1, 4, 5 }, { 2, 3, 6, 7 }, { 8, 9, 12, 13 }, { 10, 11, 14, 15 } };
++
++static void h264_idct_add16_xenon(uint8_t *dst, const int *block_offset, int16_t *block, int stride,
++                                  const uint8_t nnzc[5 * 8])
++{
++    int r;
++    if (((uintptr_t)dst | (uintptr_t)stride) & 15) {
++        h264_idct_add16_altivec(dst, block_offset, block, stride, nnzc);
++        return;
++    }
++    for (r = 0; r < 4; r++, dst += 4 * stride) {
++        const uint8_t *const b = row_blocks[r];
++        if (AV_RN32(nnzc + 12 + 8 * r))
++            xv_idct4_add_row16(dst, stride, block + b[0] * 16, block + b[1] * 16, block + b[2] * 16, block + b[3] * 16);
++    }
++}
++
++/* An intra 16x16 macroblock's: a block without coefficients of its own may still have its DC, from the
++ * macroblock's DC transform. */
++static void h264_idct_add16intra_xenon(uint8_t *dst, const int *block_offset, int16_t *block, int stride,
++                                       const uint8_t nnzc[5 * 8])
++{
++    int r;
++    if (((uintptr_t)dst | (uintptr_t)stride) & 15) {
++        h264_idct_add16intra_altivec(dst, block_offset, block, stride, nnzc);
++        return;
++    }
++    for (r = 0; r < 4; r++, dst += 4 * stride) {
++        const uint8_t *const b = row_blocks[r];
++        if (AV_RN32(nnzc + 12 + 8 * r) | block[b[0] * 16] | block[b[1] * 16] | block[b[2] * 16] | block[b[3] * 16])
++            xv_idct4_add_row16(dst, stride, block + b[0] * 16, block + b[1] * 16, block + b[2] * 16, block + b[3] * 16);
++    }
++}
++
++/* The two chroma planes' 2x2 blocks each (4:2:0): blocks 16-19 and 32-35, two rows of two. */
++static void h264_idct_add8_xenon(uint8_t **dest, const int *block_offset, int16_t *block, int stride,
++                                 const uint8_t nnzc[15 * 8])
++{
++    int j, r;
++    if (((uintptr_t)dest[0] | (uintptr_t)dest[1] | (uintptr_t)stride) & 7) {
++        h264_idct_add8_altivec(dest, block_offset, block, stride, nnzc);
++        return;
++    }
++    for (j = 1; j < 3; j++)
++        for (r = 0; r < 2; r++) {
++            int16_t *const a = block + (j * 16 + 2 * r) * 16;
++            const int i = j * 16 + 2 * r;
++            if (nnzc[scan8[i]] | nnzc[scan8[i + 1]] | a[0] | a[16])
++                xv_idct4_add_row8(dest[j - 1] + block_offset[i], stride, a, a + 16);
++        }
++}
  #endif /* HAVE_ALTIVEC */
  
  av_cold void ff_h264dsp_init_ppc(H264DSPContext *c, const int bit_depth,
-@@ -805,10 +846,17 @@ av_cold void ff_h264dsp_init_ppc(H264DSPContext *c, const int bit_depth,
+@@ -805,10 +901,24 @@ av_cold void ff_h264dsp_init_ppc(H264DSPContext *c, const int bit_depth,
          c->h264_v_loop_filter_luma= h264_v_loop_filter_luma_altivec;
          c->h264_h_loop_filter_luma= h264_h_loop_filter_luma_altivec;
  
@@ -510,6 +1338,13 @@ index 0650768..7ad8009 100644
 -        c->weight_h264_pixels_tab[1]   = weight_h264_pixels8_altivec;
 -        c->biweight_h264_pixels_tab[0] = biweight_h264_pixels16_altivec;
 -        c->biweight_h264_pixels_tab[1] = biweight_h264_pixels8_altivec;
++        /* moonlight-xbox360 (ff_xenon_tune & 32): the residual by rows of blocks. */
++        if (ff_xenon_tune & 32) {
++            if (chroma_format_idc <= 1)
++                c->h264_idct_add8 = h264_idct_add8_xenon;
++            c->h264_idct_add16      = h264_idct_add16_xenon;
++            c->h264_idct_add16intra = h264_idct_add16intra_xenon;
++        }
 +        /* Weighted prediction stays in C: it multiplies (vmladduhm), which Xenon's VMX128 (Xbox 360) lacks. */
 +        if (chroma_format_idc <= 1 && !ff_xenon_chroma_c) {
 +            xenon_v_chroma_c = c->h264_v_loop_filter_chroma;
@@ -701,3 +1536,21 @@ index bcb59ba..11d2785 100644
  #if HAVE_ALTIVEC
      if (!PPC_ALTIVEC(av_get_cpu_flags()))
          return;
+diff --git a/libavcodec/ppc/videodsp.c b/libavcodec/ppc/videodsp.c
+index a7ab5a6..263ea7a 100644
+--- a/libavcodec/ppc/videodsp.c
++++ b/libavcodec/ppc/videodsp.c
+@@ -21,9 +21,13 @@
+ #include "libavutil/attributes.h"
+ #include "libavcodec/videodsp.h"
+ 
++extern int ff_xenon_tune;   /* h264dec.h */
++
+ static void prefetch_ppc(const uint8_t *mem, ptrdiff_t stride, int h)
+ {
+     register const uint8_t *p = mem;
++    if (ff_xenon_tune & 1)
++        return;
+     do {
+         __asm__ volatile ("dcbt 0,%0" : : "r" (p));
+         p += stride;

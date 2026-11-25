@@ -28,6 +28,7 @@ typedef struct {
     bool mpeg2;                 /* the stream is MPEG-2, not H.264 */
     int stream_kind;            /* STREAM_UNKNOWN, STREAM_FULL, STREAM_NO_DEBLOCK or STREAM_LEAN */
     bool fast_decode;
+    int qp;                     /* the last second's average quantiser (H.264's QP: higher is coarser), -1 not known */
     /* Latency in ms, last second's average: the PC's capture and encode (-1: the host doesn't say), network, decode,
      * display (-1: not measured yet). */
     float host_ms, net_ms, decode_ms, display_ms;

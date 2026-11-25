@@ -10,6 +10,8 @@ enum { CODEC_H264, CODEC_MPEG2, CODECS };
 /* How much the stats HUD shows while streaming. */
 enum { STATS_OFF, STATS_COMPACT, STATS_DETAILED, STATS_MODES };
 enum { CONFIG_RECENT = 4 };
+/* How the menus are drawn: Fresh (Play, Settings and About; covers first) or Classic (five tabs and the moon). */
+enum { LOOK_FRESH, LOOK_CLASSIC, LOOKS };
 /* Where the stats HUD sits. */
 typedef enum { HUD_TOP_LEFT, HUD_TOP_RIGHT, HUD_BOTTOM_LEFT, HUD_BOTTOM_RIGHT, HUD_CORNERS } HudCorner;
 /* What, held for a second while streaming, opens the stream menu (config.c's menu_combo_buttons gives the buttons). */
@@ -55,11 +57,15 @@ typedef struct {
     int recent_id[CONFIG_RECENT];
     char recent_name[CONFIG_RECENT][64];
     bool logging;       /* write the log (moonlight360.log); off by default: each line is a write to the disk */
+    int look;           /* how the menus are drawn: LOOK_FRESH (the default) or LOOK_CLASSIC */
+    bool play_moon;     /* Fresh's Play shows the moon and its sky where the app's cover goes */
 } Config;
 
 /* Reads the file into config (defaults for anything missing). Returns whether a host is set. */
 bool config_load(const char *path, Config *config);
 /* Writes the whole config back. */
+/* While on, config_save writes nothing: an automatic test changes settings for its run only. */
+void config_set_read_only(bool on);
 bool config_save(const char *path, const Config *config);
 
 /* Puts the app (id, name) at the front of config's recent apps, dropping it from further back and the oldest. */

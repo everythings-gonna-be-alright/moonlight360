@@ -46,6 +46,10 @@
 enum {
     BUFFERS = 2,
     UI_WIDTH = 1280,   /* what the menus, the HUD and the stream menu are laid out for */
+    /* Rumble commands passed on to the pads a second while the link is Wi-Fi; 0: none. With every command passed on
+     * (30 to 50 a second in a racing game) three streams of three stopped receiving within 16 to 26 s; with none, the
+     * same stream at 30 Mbit/s ran until it was stopped (logs, 2026-11-24). */
+    WIFI_RUMBLE_PER_SECOND = 0,
     UI_HEIGHT = 720,
     SWAP_INTERVAL = 1,
     BEGIN_TIMEOUT_MS = 5000,
@@ -213,6 +217,7 @@ static void refresh_check(uint32_t last_flip_vblank)
 
 static char stats_log_text[400];
 static bool stats_log_due;
+static int stats_qp = -1;   /* the HUD's last quantiser, for the log */
 static struct {
     uint64_t sum_us, max_us;
     uint32_t frames;
@@ -228,7 +233,8 @@ static void stats_log(void)
     PerfReadings perf;
     perf_get(&perf);
     if (perf.gpu >= 0)
-        printf("[I] stats: GPU %d%%, CPU %d%% average\n", perf.gpu, perf.cpu_average);
+        printf("[I] stats: GPU %d%%, CPU %d%% average, the frame's quantiser %d (the last second's average %d)\n",
+               perf.gpu, perf.cpu_average, render_frame_qp(), stats_qp);
     if (refresh.frames) {
         printf("[I] stats: low-latency display: refresh %.3f ms, drawing reserve %.1f ms, drawing %.1f ms average "
                "%.1f ms longest, %u of %u frames missed their refresh\n", refresh.period_us / 1000.0,
@@ -290,6 +296,7 @@ static void stats_update(HudStats *hud, uint32_t shown_frames, const Config *con
         .decode_ms = v.decode_latency_ms,
         .display_ms = display.avg_ms,
     };
+    stats_qp = hud->qp = render_average_qp();
     for (int i = 0; i < TROUBLE_SECONDS; i++) {
         hud->dropped += trouble[i][0];
         hud->errors += trouble[i][1];
@@ -313,7 +320,7 @@ static void stats_update(HudStats *hud, uint32_t shown_frames, const Config *con
                  decoded_fps, v.decode_ms_avg, shown_fps, (unsigned)v.dropped, (unsigned)v.errors,
                  (unsigned)a.silent_frames, v.mpeg2 ? "MPEG-2" : v.cabac < 0 ? "" : v.cabac ? "CABAC" : "CAVLC",
                  v.stream_kind == STREAM_LEAN ? " lean" : v.stream_kind == STREAM_NO_DEBLOCK ? " no-deblock" : "",
-                 v.fast_decode ? "  fast decode" : "", net.rtt_ms,
+                 v.fast_decode ? "  skip deblocking" : "", net.rtt_ms,
                  net.rtt_var_ms, net.loss_pct, (unsigned)net.lost_frames, latency);
         stats_log_due = true;
     }
@@ -332,6 +339,14 @@ typedef struct {
     bool on;
     int seconds;
     bool tiled;
+    /* "ladder=5000,10000,20000p1080,10000i250": one session after another while each survives, at these bitrates in
+     * kbit/s; "p" and a number is the stage's picture height (16:9), "i" and a number adds a turning stick sending
+     * that many controller events a second (input_set_fake). For finding what makes the console's Wi-Fi stop
+     * receiving, with nobody at the controller. */
+    struct {
+        int bitrate_kbps, fake_input, height;
+    } stages[12];
+    int stage_count;
 } Autotest;
 
 static int arg_int(const char *args, const char *key, int fallback)
@@ -366,6 +381,9 @@ static Autotest parse_autotest(Config *c)
     if (!strstr(args, "autotest"))
         return t;
     t.on = true;
+    /* The run's overrides stay out of moonlight.ini: until 2026-11-24 a save at the stream's start (the app's id,
+     * the PC's MAC address) wrote them there, and a "decode=0" test left the user with no picture afterwards. */
+    config_set_read_only(true);
     t.seconds = arg_int(args, "seconds", 120);
     t.tiled = arg_int(args, "tiled", 1) != 0;
     c->draw = arg_int(args, "draw", c->draw) != 0;
@@ -374,6 +392,9 @@ static Autotest parse_autotest(Config *c)
     c->audio_output = arg_int(args, "audio", 1) != 0;
     c->keepalive_pps = arg_int(args, "keepalive", c->keepalive_pps);
     c->input = arg_int(args, "input", 1) != 0;
+    c->rumble = arg_int(args, "rumble", c->rumble) != 0;
+    printf("[I] AUTOTEST: rumble commands %s\n", c->rumble ? "passed on to the pads" : "DROPPED (test)");
+    input_set_fake_rumble(arg_int(args, "fakerumble", 0));
     c->audio_packet_ms = arg_int(args, "audiodur", c->audio_packet_ms);
     c->audio_on_host = arg_int(args, "hostaudio", c->audio_on_host) != 0;
     netfix_set_nonblocking_waits(arg_int(args, "nonblock", 0) != 0);
@@ -390,10 +411,43 @@ static Autotest parse_autotest(Config *c)
         /* e.g. host=192.168.1.20: another host for this test run */
         sscanf(host + 5, "%63s", c->host);
     }
+    const char *app = strstr(args, "app=");
+    if (app) {
+        /* e.g. app=Forza_Horizon_6: another app for this test run, its spaces written as underscores */
+        sscanf(app + 4, "%63s", c->app);
+        for (char *ch = c->app; *ch; ch++)
+            if (*ch == '_')
+                *ch = ' ';
+        c->app_id = 0;
+    }
     c->packet_size = arg_int(args, "packet", c->packet_size);
     c->slices = arg_int(args, "slices", c->slices);
     c->codec = arg_int(args, "mpeg2", c->codec == CODEC_MPEG2) ? CODEC_MPEG2 : CODEC_H264;
     c->bitrate_kbps = arg_int(args, "bitrate", c->bitrate_kbps);
+    for (const char *p = strstr(args, "ladder="); p && t.stage_count < 12;) {
+        p = t.stage_count ? p + 1 : p + 7;
+        char *end;
+        const long kbps = strtol(p, &end, 10);
+        if (end == p || kbps <= 0)
+            break;
+        t.stages[t.stage_count].bitrate_kbps = (int)kbps;
+        while (*end == 'i' || *end == 'p') {
+            const char what = *end;
+            const long value = strtol(end + 1, &end, 10);
+            if (what == 'i')
+                t.stages[t.stage_count].fake_input = value > 0 ? (int)value : 250;
+            else
+                t.stages[t.stage_count].height = (int)value;
+        }
+        t.stage_count++;
+        p = *end == ',' ? end : NULL;
+    }
+    if (t.stage_count)
+        c->bitrate_kbps = t.stages[0].bitrate_kbps;
+    if (t.stage_count && t.stages[0].height) {
+        c->height = t.stages[0].height;
+        c->width = c->height * 16 / 9;
+    }
     c->width = arg_int(args, "width", c->width);
     c->height = arg_int(args, "height", c->height);
     c->fps = arg_int(args, "fps", c->fps);
@@ -431,6 +485,32 @@ static void draw_status(uint32_t width, uint32_t height, const SessionView *view
         return;
     }
     ui_draw_status(width, height, busy ? "Stopping" : "Stopped", view->text, NULL, busy);
+}
+
+/* The picture, or while it hasn't come the connecting screen. In the Fresh look the first picture doesn't cut in: the
+ * connecting screen fades to the background (the picture under it, hidden), then the picture fades in, 0.6 s in all. */
+static void draw_picture(uint32_t width, uint32_t height, uint32_t target_width, uint32_t target_height,
+                         const Config *config)
+{
+    enum { OUT = 14, IN = 22 };
+    static uint32_t since;
+    if (!render_draw(target_width, target_height)) {
+        since = 0;
+        draw_progress(width, height, config, SESSION_STEP_PICTURE, "Waiting for the first frame from the PC\xE2\x80\xA6");
+        return;
+    }
+    if (!ui_fresh())
+        return;
+    if (!since)
+        since = gfx_frame();
+    const uint32_t age = gfx_frame() - since;
+    if (age < OUT) {
+        ui_draw_veil(width, height, 1.0f);
+        draw_progress(width, height, config, SESSION_STEP_PICTURE, "");
+        ui_draw_veil(width, height, (float)age / OUT);
+    } else if (age < OUT + IN) {
+        ui_draw_veil(width, height, 1.0f - (float)(age - OUT) / IN);
+    }
 }
 
 /* Headless automatic test ("autotest ui=0 ..."): Moonlight's session with no GPU, display, text or controller
@@ -540,6 +620,17 @@ int main(void)
 
     if (!have_config)
         menu_set_message("Set the Host PC to the IP address of the PC running Sunshine, then Connect.");
+    /* "restore=1" in the dev server's arguments: puts back what the automatic tests of 2026-11-24 overwrote in the
+     * saved settings (see config_set_read_only): decoding, drawing and rumble on, 1080p60 at 30 Mbit/s. */
+    if (arg_int(devreturn_args(), "restore", 0) && !strstr(devreturn_args(), "autotest")) {
+        config.decode = config.draw = config.rumble = config.input = true;
+        config.width = 1920;
+        config.height = 1080;
+        config.fps = 60;
+        config.bitrate_kbps = 30000;
+        config_save(CONFIG_PATH, &config);
+        printf("[I] settings restored: decoding, drawing, rumble and input on, 1920x1080 60 fps 30000 kbps\n");
+    }
     menu_open(&config, CONFIG_PATH);
     bool in_session = false;          /* a session was started and hasn't come back to the menu yet */
     Autotest autotest = parse_autotest(&config);
@@ -550,6 +641,14 @@ int main(void)
     if (config.input)
         input_start();   /* reads the pads ~1000 times a second and sends them while streaming (input.c) */
     uint64_t autotest_stream_start = 0, autotest_retry_at = 0;
+    int autotest_stage = 0;
+    /* The network's timeline in the log, once a second while a stream runs and the log is on. */
+    uint64_t stream_started_ms = 0, net_line_ms = 0, net_changed_ms = 0;
+    unsigned net_received = 0;
+    bool net_dead_logged = false;
+    bool on_wifi = false;
+    const int wifi_rumble = arg_int(devreturn_args(), "wifirumble", WIFI_RUMBLE_PER_SECOND);
+    uint64_t wifi_checked_ms = 0;
     bool autotest_stopped = false;
     int autotest_attempts = 1;
     enum { AUTOTEST_ATTEMPTS = 5, AUTOTEST_RETRY_MS = 10000 };
@@ -595,14 +694,55 @@ int main(void)
             config_save(CONFIG_PATH, &config);
         }
 
-        if (autotest.on && streaming && !autotest_stream_start)
+        if (autotest.on && streaming && !autotest_stream_start) {
             autotest_stream_start = now_ms();
-        if (autotest.on && streaming && !autotest_stopped &&
-            now_ms() - autotest_stream_start >= (uint64_t)autotest.seconds * 1000) {
-            printf("[I] AUTOTEST: %d s reached, stopping the stream\n", autotest.seconds);
-            autotest_stopped = true;
-            session_request_stop(false);
-            stopping = true;
+            if (autotest.stage_count) {
+                input_set_fake(autotest.stages[autotest_stage].fake_input);
+                printf("[I] AUTOTEST STAGE %d of %d: %dx%d, %d kbps, %d synthetic controller events a second\n",
+                       autotest_stage + 1, autotest.stage_count, config.width, config.height, config.bitrate_kbps,
+                       autotest.stages[autotest_stage].fake_input);
+            }
+        }
+        /* What each socket has received and sent so far, the controller events sent and the rumble commands taken:
+         * the figures that tell what the console's network was carrying when it stopped. Kept in memory with the
+         * rest of the log; written out at once if nothing arrives for four seconds, as the next thing is usually a
+         * reboot. */
+        if (streaming && !stream_started_ms) {
+            stream_started_ms = net_changed_ms = net_line_ms = now_ms();
+            net_received = netfix_received_total();
+            net_dead_logged = false;
+            on_wifi = netfix_on_wifi();
+            /* Rumble: on a cable every command goes to the pad as it comes. On Wi-Fi each one passed on while the
+             * stream arrives can stop the console's adapter receiving until a reboot, so there they are held to
+             * wifi_rumble a second (WIFI_RUMBLE_PER_SECOND; the dev server's "wifirumble=N" for tests). */
+            input_set_rumble_limit(!config.rumble ? 0 : on_wifi ? wifi_rumble : INPUT_RUMBLE_ALL);
+            printf("[I] rumble: %s\n", !config.rumble ? "off (the setting)"
+                                       : !on_wifi      ? "every command passed on (cable)"
+                                       : wifi_rumble   ? "held back on Wi-Fi" : "off on Wi-Fi");
+        } else if (!streaming) {
+            stream_started_ms = 0;
+        }
+        if (streaming && now_ms() - net_line_ms >= 1000) {
+            const unsigned received = netfix_received_total();
+            const bool arrived = received != net_received;
+            net_line_ms = now_ms();
+            net_received = received;
+            if (log_forced || config.logging) {
+                char counts[200];
+                netfix_snapshot(counts, sizeof counts);
+                printf("[I] net t+%u s: %s| input %u rumble %u passed %u\n",
+                       (unsigned)((net_line_ms - stream_started_ms) / 1000), counts, input_events_sent(),
+                       input_rumbles(), input_rumbles_passed());
+            }
+            if (arrived) {
+                net_changed_ms = net_line_ms;
+                net_dead_logged = false;
+            } else if (!net_dead_logged && net_line_ms - net_changed_ms >= 4000) {
+                net_dead_logged = true;
+                printf("[W] net: nothing received on any socket for 4 s\n");
+                diag_log("nothing received");
+                logbuf_flush();
+            }
         }
         /* A failed or ended session returns to the menu, saying why. */
         if (in_session && (view.state == SESSION_FAILED || view.state == SESSION_ENDED)) {
@@ -622,7 +762,20 @@ int main(void)
                     autotest_retry_at = now_ms() + AUTOTEST_RETRY_MS;
                 } else
                     printf("[I] AUTOTEST RESULT: NO STREAM after %d attempts (%s)\n", autotest_attempts, view.text);
-                if (autotest_stopped || autotest_stream_start || autotest_attempts >= AUTOTEST_ATTEMPTS)
+                input_set_fake(0);
+                if (autotest_stopped && autotest_stage + 1 < autotest.stage_count) {
+                    /* The stage survived: the next one, as a session of its own. */
+                    autotest_stage++;
+                    config.bitrate_kbps = autotest.stages[autotest_stage].bitrate_kbps;
+                    if (autotest.stages[autotest_stage].height) {
+                        config.height = autotest.stages[autotest_stage].height;
+                        config.width = config.height * 16 / 9;
+                    }
+                    autotest_stream_start = 0;
+                    autotest_stopped = false;
+                    autotest_attempts = 0;
+                    autotest_retry_at = now_ms() + 4000;
+                } else if (autotest_stopped || autotest_stream_start || autotest_attempts >= AUTOTEST_ATTEMPTS)
                     running = false;
             }
             menu_set_message(view.text);
@@ -667,7 +820,7 @@ int main(void)
             display.avg_ms = -1.0f;
             memset(&history, 0, sizeof history);
             refresh_reset();
-            printf("[I] stream settings: %dx%d@%d %d kbps, fast decode %d, low-latency display %d, stats %d\n",
+            printf("[I] stream settings: %dx%d@%d %d kbps, skip deblocking %d, low-latency display %d, stats %d\n",
                    config.width, config.height, config.fps, config.bitrate_kbps, config.fast_decode,
                    config.low_latency, config.stats_mode);
         }
@@ -706,9 +859,7 @@ int main(void)
         gfx_frame_begin(width, height);
         perf_gpu_frame_begin();
         if (streaming) {
-            if (!render_draw(target_width, target_height))
-                draw_progress(width, height, &config, SESSION_STEP_PICTURE,
-                              "Waiting for the first frame from the PC\xE2\x80\xA6");
+            draw_picture(width, height, target_width, target_height, &config);
             static HudStats hud;
             stats_update(&hud, shown_frames, &config);
             /* Load into the graph's ring whenever a new sample came (twice a second), HUD shown or not. */
@@ -831,6 +982,11 @@ int main(void)
                 uisound_open();
             else
                 uisound_close();
+            /* The Rumble row says what Wi-Fi does to it; the link can change while the menu is up (a cable goes in). */
+            if (now_ms() - wifi_checked_ms >= 2000) {
+                wifi_checked_ms = now_ms();
+                menu_set_wifi(netfix_on_wifi());
+            }
             const MenuAction action = reconnect ? MENU_CONNECT : menu_update(&input);
             reconnect = false;
             switch (action) {

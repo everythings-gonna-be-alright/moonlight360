@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The README's animated tour, docs/screenshots/v0.3/tour.webp: the menu preview's scripted walk through the menus,
+"""The README's animated tour, docs/screenshots/v0.4/tour.webp: the menu preview's scripted walk through the menus,
 as an animated WebP (full colour, unlike a GIF's 256), 1280x720 (the console's own size) at 60 frames a second,
 as the console draws the menus. Needs Pillow.
 
@@ -13,7 +13,7 @@ import sys
 from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-OUT = os.path.join(ROOT, "docs", "screenshots", "v0.3", "tour.webp")
+OUT = os.path.join(ROOT, "docs", "screenshots", "v0.4", "tour.webp")
 QUALITY = int(os.environ.get("TOUR_QUALITY", "70"))   # real game art compresses worse than the menus
 
 

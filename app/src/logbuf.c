@@ -116,6 +116,17 @@ void logbuf_begin(void)
     pthread_mutex_unlock(&lock);
 }
 
+void logbuf_flush(void)
+{
+    pthread_mutex_lock(&lock);
+    const bool was = buffering;
+    pthread_mutex_unlock(&lock);
+    if (!was)
+        return;
+    logbuf_end();
+    logbuf_begin();
+}
+
 void logbuf_end(void)
 {
     pthread_mutex_lock(&lock);
